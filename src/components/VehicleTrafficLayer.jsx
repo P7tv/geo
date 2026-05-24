@@ -3,6 +3,7 @@
  * Using GISTDA Sphere Map JS API
  */
 export const renderVehicleTrafficBadges = (mapInstance, routePaths, vehicleData, activeRoute) => {
+  if (!window.sphere) return [];
   const markers = [];
 
   Object.entries(routePaths).forEach(([routeId, pathData]) => {

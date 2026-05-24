@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import './index.css';
 
 import { getVehicleRouteSummary, getAiBriefing, getTerminalLogs } from './services/vehicleApi';
@@ -7,30 +7,36 @@ import { getWaterLevels, getDamLevels, getShelters, getTmdWarnings, getRouteRisk
 import { renderVehicleTrafficBadges, getCongestionColor } from './components/VehicleTrafficLayer';
 
 const WEATHER_STATIONS = [
-  { id: 'CM_CITY',       name: 'เมืองเชียงใหม่', lat: 18.788, lon: 98.985 },
-  { id: 'MAE_RIM',       name: 'แม่ริม',          lat: 18.914, lon: 98.944 },
-  { id: 'MAE_TAENG',     name: 'แม่แตง',          lat: 19.121, lon: 98.943 },
-  { id: 'SAN_SAI',       name: 'สันทราย',          lat: 18.850, lon: 99.040 },
-  { id: 'HANG_DONG',     name: 'หางดง',            lat: 18.685, lon: 98.918 },
-  { id: 'SAN_KAMPHAENG', name: 'สันกำแพง',         lat: 18.745, lon: 99.115 },
+  { id: 'CR_CITY',       name: 'เมืองเชียงราย', lat: 19.908, lon: 99.832 },
+  { id: 'MAE_SAI',      name: 'แม่สาย',         lat: 20.434, lon: 99.882 },
+  { id: 'WIANG_PA_PAO', name: 'เวียงป่าเป้า',   lat: 19.375, lon: 99.858 },
+  { id: 'THOENG',       name: 'เทิง',            lat: 19.977, lon: 100.074 },
+  { id: 'PHAN',         name: 'พาน',             lat: 19.639, lon: 99.779 },
+  { id: 'CHIANG_KHONG', name: 'เชียงของ',        lat: 20.299, lon: 100.389 },
 ];
 
-const CM_RISK_POINTS = [
-  { name: 'ช้างคลาน',   lat: 18.778, lon: 98.995, severity: 0.9 },
-  { name: 'กาดก้อม',    lat: 18.775, lon: 98.988, severity: 0.8 },
-  { name: 'สถานีรถไฟ',  lat: 18.785, lon: 99.015, severity: 0.7 },
-  { name: 'ป่าตัน',     lat: 18.815, lon: 98.995, severity: 0.85 },
+const CR_RISK_POINTS = [
+  { name: 'อ.แม่สาย',       lat: 20.434, lon: 99.882,  severity: 0.92 },
+  { name: 'อ.เวียงป่าเป้า', lat: 19.375, lon: 99.858,  severity: 0.88 },
+  { name: 'แม่น้ำกก เมือง', lat: 19.908, lon: 99.832,  severity: 0.60 },
+  { name: 'อ.เทิง',         lat: 19.977, lon: 100.074, severity: 0.65 },
 ];
 
 const ROUTES_BASE = [
-  { id: 'A', name: 'เส้นทาง A — ทล.1',              color: '#22c55e', status: 'ปลอดภัย',     desc: 'ถนนสายหลัก ทล.1 ระดับน้ำลดลงต่อเนื่อง' },
-  { id: 'B', name: 'เส้นทาง B — ทล.118',            color: '#f59e0b', status: 'เสี่ยงปานกลาง', desc: 'ทล.118 น้ำท่วมบางส่วน ระดับน้ำคงที่'   },
-  { id: 'C', name: 'เส้นทาง C — บ้านสันทราย',       color: '#ef4444', status: 'เสี่ยงสูง',    desc: 'ทางลัดตัดผ่านพื้นที่น้ำหลากฉับพลัน'    },
+  { id: 'A', name: 'เส้นทาง A — ทล.1 เมือง→แม่สาย',    color: '#22c55e', status: 'ปลอดภัย',     desc: 'ถนนสายหลัก ทล.1 ผ่านอ.พาน ระดับน้ำกกปกติ'       },
+  { id: 'B', name: 'เส้นทาง B — ทล.118 เมือง→เทิง',   color: '#f59e0b', status: 'เสี่ยงปานกลาง', desc: 'ทล.118 ผ่านอ.เทิง น้ำท่วมบางส่วน คาดการณ์เพิ่ม' },
+  { id: 'C', name: 'เส้นทาง C — ทางลัดเวียงป่าเป้า',   color: '#ef4444', status: 'เสี่ยงสูง',    desc: 'ทางลัดผ่านลุ่มน้ำลาว น้ำหลากฉับพลันสูงมาก'        },
 ];
 
 const TOGGLE_LABELS = {
   flood: 'น้ำท่วม', wind: 'ลม', history: 'ประวัติ',
   cloud: 'เมฆ', satellite: 'ดาวเทียม', sarMask: 'SAR', vehicles: 'ยานพาหนะ',
+};
+
+const CONGESTION_CONFIG = {
+  blocked: { tag: 'tag-danger', label: 'ติดขัด' },
+  warning: { tag: 'tag-warn',   label: 'หนาแน่น' },
+  normal:  { tag: 'tag-safe',   label: 'ปกติ' },
 };
 
 function getDist(p1, p2) {
@@ -144,8 +150,8 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
         try {
           mapInstance.current = new window.sphere.Map({
             placeholder: mapRef.current,
-            center: { lon: 98.99, lat: 18.79 },
-            zoom: 12,
+            center: { lon: 99.832, lat: 19.908 },
+            zoom: 11,
           });
         } catch (err) {
           console.error("❌ Map initialization failed:", err);
@@ -276,16 +282,27 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     if (!mapInstance.current || !window.sphere) return;
     layersRef.current.sarPolygons.forEach(p => mapInstance.current.Overlays.remove(p));
     layersRef.current.sarPolygons = [];
-    if (toggles.sarMask) {
-      const polys = [
-        [{ lon:99.01,lat:18.79 },{ lon:99.02,lat:18.81 },{ lon:99.03,lat:18.80 },{ lon:99.025,lat:18.785 }],
-        [{ lon:98.98,lat:18.76 },{ lon:98.99,lat:18.77 },{ lon:98.97,lat:18.77 },{ lon:98.975,lat:18.755 }],
-      ];
-      polys.forEach(pts => {
-        const p = new window.sphere.Polygon(pts, { lineColor:'rgba(59,130,246,0.4)', fillColor:'rgba(59,130,246,0.15)' });
-        mapInstance.current.Overlays.add(p); layersRef.current.sarPolygons.push(p);
-      });
-    }
+    if (!toggles.sarMask) return;
+
+    fetch('http://localhost:3001/api/sar/flood')
+      .then(r => r.ok ? r.json() : null)
+      .then(geojson => {
+        if (!geojson?.features) return;
+        geojson.features.forEach(feat => {
+          const ring = feat.geometry?.coordinates?.[0];
+          if (!ring) return;
+          const pts = ring.map(([lon, lat]) => ({ lon, lat }));
+          const severity = feat.properties?.severity ?? 0.7;
+          const alpha = 0.1 + severity * 0.15;
+          const poly = new window.sphere.Polygon(pts, {
+            lineColor: `rgba(59,130,246,${(alpha * 3).toFixed(2)})`,
+            fillColor: `rgba(59,130,246,${alpha.toFixed(2)})`,
+          });
+          mapInstance.current.Overlays.add(poly);
+          layersRef.current.sarPolygons.push(poly);
+        });
+      })
+      .catch(() => {});
   }, [toggles.sarMask]);
 
   useEffect(() => {
@@ -381,7 +398,7 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
 
-  const [gistdaRiskPoints, setGistdaRiskPoints] = useState(CM_RISK_POINTS);
+  const [gistdaRiskPoints, setGistdaRiskPoints] = useState(CR_RISK_POINTS);
 
   // External data sources
   const [waterLevels, setWaterLevels]   = useState(null);
@@ -410,16 +427,25 @@ export default function App() {
     setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 6000);
   };
 
-  const addLog = (routeName, warn = false, customReason = null) => {
+  const addLog = (routeName, warn = false, customReason = null, officerOverride = null) => {
     const t = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
     const reasons = [
       'ดึงข้อมูลดาวเทียม Sentinel-1A ตรวจประเมินพื้นที่แห้งสำเร็จ',
-      'ระดับสัญญาณน้ำล่างเกณฑ์สูงสุด ปลอดภัยในการลุยภารกิจ',
-      'กรมอุตุนิยมวิทยา TMD ยืนยันกระแสฝนลดลง',
+      'ระดับน้ำกกต่ำกว่าเกณฑ์เตือนภัย ปลอดภัยในการปฏิบัติภารกิจ',
+      'กรมอุตุนิยมวิทยา TMD ยืนยันกระแสฝนลดลงในเชียงราย',
     ];
     const reason = customReason || reasons[Math.floor(Math.random() * reasons.length)];
-    const officer = ['วิทยา ล.ศ.', 'สมชาติ พ.ต.ท.', 'นพดล ร.ต.อ.', 'อรรถ จ.ส.ต.'][Math.floor(Math.random() * 4)];
+    const officer = officerOverride || ['วิทยา ล.ศ.', 'สมชาติ พ.ต.ท.', 'นพดล ร.ต.อ.', 'อรรถ จ.ส.ต.'][Math.floor(Math.random() * 4)];
     setDecisionLogs(p => [{ route: routeName, time: t, reason, officer, warn }, ...p.slice(0, 8)]);
+
+    // Persist override to server audit log when it's a human override (officerOverride provided)
+    if (officerOverride) {
+      fetch('http://localhost:3001/api/override', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routeId: routeName, reason, officer }),
+      }).catch(() => {});
+    }
   };
 
   const fetchVehicleData = async () => {
@@ -440,60 +466,90 @@ export default function App() {
     }
   };
 
+  const fetchRouteExplanation = async () => {
+    const routes = ['A', 'B', 'C']
+      .map(id => routePaths[id] ? { id, risk: routePaths[id].risk, features: routePaths[id].features } : null)
+      .filter(Boolean);
+    if (routes.length === 0) { addToast('ยังไม่มีข้อมูลเส้นทาง — รอโหลดสักครู่', 'warn'); return; }
+    try {
+      addToast('AI กำลังวิเคราะห์เหตุผลความเสี่ยง...', 'info');
+      const res = await fetch('http://localhost:3001/api/explain', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routes }),
+      });
+      const data = await res.json();
+      if (data.explanation) {
+        addLog('XAI Explanation', false, data.explanation.slice(0, 120));
+        addToast('AI อธิบายความเสี่ยงเส้นทางสำเร็จ', 'success');
+      }
+    } catch (_) { addToast('XAI endpoint ไม่ตอบสนอง', 'warn'); }
+  };
+
   const fetchGistdaFloodData = async () => {
     try {
       const res = await fetch('http://localhost:3001/api/gistda/flood');
+      if (!res.ok) throw new Error(`GISTDA API ${res.status}`);
       const data = await res.json();
-      if (Array.isArray(data)) {
-        const pts = data
-          .filter(p => p.province === 'เชียงใหม่' || p.province_name === 'เชียงใหม่' || p.province === 'Chiang Mai')
-          .map(p => ({ name: p.amphoe || p.district || 'GISTDA', lat: parseFloat(p.latitude || p.lat), lon: parseFloat(p.longitude || p.lon), severity: parseFloat(p.severity || 0.8) }));
-        if (pts.length > 0) {
-          setGistdaRiskPoints(pts);
-          addToast(`ดึงข้อมูลจุดเสี่ยงน้ำท่วม GISTDA สำเร็จ (${pts.length} พิกัด)`, 'success');
-        }
+      if (!Array.isArray(data)) return;
+      const pts = data
+        .filter(p => p.province === 'เชียงราย' || p.province_name === 'เชียงราย' || p.province === 'Chiang Rai')
+        .map(p => ({
+          name:     p.amphoe || p.district || 'GISTDA',
+          lat:      parseFloat(p.latitude  || p.lat),
+          lon:      parseFloat(p.longitude || p.lon),
+          severity: parseFloat(p.severity  || 0.8),
+        }));
+      if (pts.length > 0) {
+        setGistdaRiskPoints(pts);
+        addToast(`ดึงข้อมูลจุดเสี่ยงน้ำท่วม GISTDA สำเร็จ (${pts.length} พิกัด)`, 'success');
       }
     } catch (_) {}
   };
 
   const fetchRegionalWeather = async () => {
+    const settled = await Promise.allSettled(
+      WEATHER_STATIONS.map(st =>
+        getHourlyForecast(st.lat, st.lon).then(data => ({ id: st.id, data }))
+      )
+    );
+
     const results = {};
-    let successCount = 0;
-    for (const st of WEATHER_STATIONS) {
-      try {
-        const data = await getHourlyForecast(st.lat, st.lon);
-        if (data?.WeatherForecasts?.[0]?.forecasts?.[0]) {
-          results[st.id] = data.WeatherForecasts[0].forecasts[0].data;
-          successCount++;
-        }
-      } catch(_) {}
-    }
+    settled.forEach(r => {
+      if (r.status === 'fulfilled') {
+        const { id, data } = r.value;
+        const forecast = data?.WeatherForecasts?.[0]?.forecasts?.[0]?.data;
+        if (forecast) results[id] = forecast;
+      }
+    });
+    const successCount = Object.keys(results).length;
 
     if (successCount > 0) {
       setStationData(results);
       addToast(`เชื่อมต่อข้อมูลอากาศ TMD สำเร็จ (${successCount} สถานี)`, 'success');
     } else {
-      // TMD server offline or token expired fallback
+      // TMD server offline or token expired fallback (Chiang Rai stations)
       const fallbacks = {
-        'CM_CITY': { tc: 27.8, rr: 2.5, ws: 3.2, wd: 220 },
-        'MAE_RIM': { tc: 22.4, rr: 12.4, ws: 5.6, wd: 180 },
-        'MAE_TAENG': { tc: 28.1, rr: 6.2, ws: 4.1, wd: 200 },
-        'SAN_SAI': { tc: 26.5, rr: 1.5, ws: 1.8, wd: 90 },
-        'HANG_DONG': { tc: 26.0, rr: 4.8, ws: 2.0, wd: 100 },
-        'SAN_KAMPHAENG': { tc: 27.0, rr: 8.5, ws: 3.0, wd: 210 },
+        'CR_CITY':       { tc: 27.5, rr: 3.2, ws: 2.8, wd: 200 },
+        'MAE_SAI':       { tc: 25.8, rr: 14.2, ws: 5.1, wd: 175 },
+        'WIANG_PA_PAO':  { tc: 24.1, rr: 18.6, ws: 6.3, wd: 185 },
+        'THOENG':        { tc: 26.3, rr: 7.4, ws: 3.5, wd: 195 },
+        'PHAN':          { tc: 27.0, rr: 2.1, ws: 2.0, wd: 90 },
+        'CHIANG_KHONG':  { tc: 28.5, rr: 4.5, ws: 3.0, wd: 210 },
       };
       setStationData(fallbacks);
       addToast('⚠️ เชื่อมต่อ TMD ล้มเหลว — ดึงข้อมูลคาดการณ์เชิงสถิติของจังหวัดแทน', 'warn');
     }
   };
 
-  const cityCur = stationData['CM_CITY'] || { tc: null, rr: null, ws: null, wd: null };
+  const cityCur = stationData['CR_CITY'] || { tc: null, rr: null, ws: null, wd: null };
 
   const fetchRealRoutes = async () => {
+    // Chiang Rai: เมือง → แม่สาย / เทิง / เวียงป่าเป้า
     const coords = {
-      A: [[98.985, 18.788], [99.018, 18.825]],
-      B: [[98.985, 18.788], [98.950, 18.805]],
-      C: [[98.985, 18.788], [99.005, 18.792]],
+      A: [[99.832, 19.908], [99.882, 20.434]],   // ทล.1 เมือง→แม่สาย
+      B: [[99.832, 19.908], [100.074, 19.977]],  // ทล.118 เมือง→เทิง
+      C: [[99.832, 19.908], [99.858, 19.375]],   // ทางลัดเวียงป่าเป้า
     };
 
     const [mlRisks, ...osrmResults] = await Promise.allSettled([
@@ -579,7 +635,7 @@ export default function App() {
 
     setChatMessages([{
       role: 'ai',
-      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัยเชียงใหม่<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA sphere · TMD · OSRM · Supabase CCTV</span>',
+      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัย<strong>เชียงราย</strong><br/>ครอบคลุม 4 อำเภอ: เมือง · แม่สาย · เทิง · เวียงป่าเป้า<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA sphere · TMD · OSRM · Supabase CCTV · Sentinel-1A SAR</span>',
       time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
     }]);
 
@@ -666,6 +722,14 @@ export default function App() {
     }, 100);
   };
 
+  const maxRainStation = WEATHER_STATIONS.reduce(
+    (best, st) => {
+      const val = stationData[st.id]?.rr || 0;
+      return val > best.val ? { name: st.name, val } : best;
+    },
+    { name: null, val: -1 }
+  );
+
   const filteredRiskPoints = (gistdaRiskPoints || []).filter(pt => {
     if (!geoSearch) return true;
     const s = geoSearch.toLowerCase();
@@ -708,7 +772,7 @@ export default function App() {
           <div className="header-center">
             <div className="status-chip province">
               <span className="status-dot live" />
-              เชียงใหม่
+              เชียงราย
             </div>
             <div className={`status-chip ${alertLevelClass}`}>
               <span className="status-dot live" />
@@ -763,7 +827,7 @@ export default function App() {
             ? `[TMD แจ้งเตือนทางการ] ${tmdAlertText}`
             : briefingLoading
               ? 'กำลังประมวลผลสถานการณ์...'
-              : (briefing.text || 'ระบบพร้อมปฏิบัติการ — กำลังประเมินสถานการณ์น้ำท่วมพื้นที่เชียงใหม่')}
+              : (briefing.text || 'ระบบพร้อมปฏิบัติการ — กำลังประเมินสถานการณ์น้ำท่วมพื้นที่เชียงราย (เมือง, แม่สาย, เทิง, เวียงป่าเป้า)')}
         </span>
         {briefing.timestamp && !hasTmdWarning && (
           <span className="alert-banner-meta">{briefing.timestamp}</span>
@@ -890,7 +954,12 @@ export default function App() {
             <div className="sb-section">
               <div className="sb-section-header">
                 <span className="sb-section-title">เส้นทางแนะนำ</span>
-                <span className="sb-section-badge">OSRM</span>
+                <button
+                  onClick={fetchRouteExplanation}
+                  style={{ background: 'var(--blue-dim)', border: '1px solid var(--border-strong)', color: '#60a5fa', borderRadius: 'var(--radius)', padding: '2px 8px', fontSize: 9, fontFamily: 'var(--font-en)', cursor: 'pointer' }}
+                >
+                  🔍 XAI อธิบาย
+                </button>
               </div>
               {allRoutesData.map((route, i) => {
                 const tagClass = route.id === 'A' ? 'tag-safe' : route.id === 'B' ? 'tag-warn' : 'tag-danger';
@@ -1021,16 +1090,14 @@ export default function App() {
                 <span className="sb-section-title">ปริมาณจราจร CCTV</span>
               </div>
               {allRoutesData.map(route => {
-                const vd = vehicleData[route.id];
+                const vd  = vehicleData[route.id];
                 const pct = Math.min((vd?.vehicle_count ?? 0) / 30 * 100, 100);
-                const barColor = route.id === 'A' ? 'var(--safe)' : route.id === 'B' ? 'var(--warn)' : 'var(--danger)';
-                const cTag = vd?.congestion_level === 'blocked' ? 'tag-danger' : vd?.congestion_level === 'warning' ? 'tag-warn' : 'tag-safe';
-                const cLabel = vd?.congestion_level === 'blocked' ? 'ติดขัด' : vd?.congestion_level === 'warning' ? 'หนาแน่น' : 'ปกติ';
+                const { tag: cTag, label: cLabel } = CONGESTION_CONFIG[vd?.congestion_level] ?? CONGESTION_CONFIG.normal;
                 return (
                   <div key={route.id} className="traffic-row">
                     <span className="traffic-route-label">{route.id}</span>
                     <div className="traffic-bar-track">
-                      <div className="traffic-bar-fill" style={{ width: `${pct}%`, background: barColor }} />
+                      <div className="traffic-bar-fill" style={{ width: `${pct}%`, background: route.color }} />
                     </div>
                     <span className="traffic-count">{vd?.vehicle_count ?? 0}</span>
                     <span className={`congestion-tag ${cTag}`}>{cLabel}</span>
@@ -1123,6 +1190,18 @@ export default function App() {
             <div className="sb-section">
               <div className="sb-section-header">
                 <span className="sb-section-title">บันทึกการตัดสินใจ</span>
+                <button
+                  onClick={() => {
+                    const reason = window.prompt('เหตุผลการตัดสินใจ Override:');
+                    if (!reason) return;
+                    const officer = window.prompt('ชื่อเจ้าหน้าที่:') || 'ผบ.เหตุการณ์';
+                    addLog(`Override: ${activeRoute}`, true, reason, officer);
+                    addToast(`บันทึก Override เส้นทาง ${activeRoute} สำเร็จ`, 'success');
+                  }}
+                  style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: 'var(--danger)', borderRadius: 'var(--radius)', padding: '2px 8px', fontSize: 9, fontFamily: 'var(--font-en)', cursor: 'pointer' }}
+                >
+                  ✋ Override
+                </button>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {decisionLogs.map((log, idx) => (
@@ -1212,7 +1291,7 @@ export default function App() {
             <div className="gov-page-header">
               <div className="gov-page-title">
                 <h2>วิเคราะห์สารสนเทศภูมิศาสตร์และข้อมูลดาวเทียม (Geospatial & Satellite Analysis)</h2>
-                <p>รายงานข้อมูลจุดเสี่ยงภัยแล้ง/น้ำท่วม จากระบบดาวเทียม Sentinel-1A SAR และ GISTDA Sphere Map</p>
+                <p>รายงานข้อมูลจุดเสี่ยงน้ำท่วมจังหวัดเชียงราย (4 อำเภอ) จากระบบดาวเทียม Sentinel-1A SAR และ GISTDA Open Data</p>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <input
@@ -1244,7 +1323,7 @@ export default function App() {
               {/* Table side */}
               <div className="gov-card" style={{ flex: 1, overflow: 'hidden' }}>
                 <div className="gov-card-header">
-                  <h3>ตารางพิกัดจุดเสี่ยงน้ำท่วม GISTDA Open Data (เชียงใหม่)</h3>
+                  <h3>ตารางพิกัดจุดเสี่ยงน้ำท่วม GISTDA Open Data (เชียงราย)</h3>
                   <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>พบทั้งหมด {filteredRiskPoints.length} พื้นที่</span>
                 </div>
                 <div className="gov-table-wrapper">
@@ -1320,7 +1399,7 @@ export default function App() {
                       const blipClass = rainVal > 10 ? 'heavy' : rainVal > 3 ? 'moderate' : 'light';
                       
                       return (
-                        <React.Fragment key={st.id}>
+                        <Fragment key={st.id}>
                           <div
                             className={`radar-blip ${blipClass}`}
                             style={{
@@ -1337,7 +1416,7 @@ export default function App() {
                           >
                             {st.name.substring(0, 5)}: {rainVal.toFixed(1)} mm
                           </div>
-                        </React.Fragment>
+                        </Fragment>
                       );
                     })}
                   </div>
@@ -1352,15 +1431,7 @@ export default function App() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '4px' }}>
                       <span style={{ color: 'var(--text-3)' }}>สถานีตรวจวัดฝนสูงสุด:</span>
                       <strong style={{ color: 'var(--warn)' }}>
-                        {(() => {
-                          let maxSt = null;
-                          let maxVal = -1;
-                          WEATHER_STATIONS.forEach(s => {
-                            const val = stationData[s.id]?.rr || 0;
-                            if (val > maxVal) { maxVal = val; maxSt = s.name; }
-                          });
-                          return `${maxSt || '—'} (${maxVal.toFixed(1)} mm)`;
-                        })()}
+                        {maxRainStation.name ? `${maxRainStation.name} (${maxRainStation.val.toFixed(1)} mm)` : '—'}
                       </strong>
                     </div>
                   </div>
