@@ -253,17 +253,21 @@ const buildContext = (weather, traffic, routeRisks) => {
 };
 
 // ── External data metadata — Chiang Rai Province ─────────────────────────────
+// API: api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel_graph
+// Station IDs are numeric (verified from /frontend/shared/station_all)
+// value field = meters above sea level (masl); min_bank = bank overflow threshold
 
 const RIVER_STATIONS = [
-  { id: 'K.1',  name: 'แม่น้ำกก เมืองเชียงราย',  lat: 19.908, lon: 99.832 },
-  { id: 'K.2A', name: 'แม่น้ำกก บ้านสบกก',       lat: 20.218, lon: 99.882 },
-  { id: 'W.1A', name: 'แม่น้ำวัง เทิง',           lat: 19.977, lon: 100.074 },
-  { id: 'L.1',  name: 'แม่น้ำลาว เวียงป่าเป้า',   lat: 19.375, lon: 99.858 },
+  { id: 1574191, name: 'แม่น้ำกก บ้านกกโท้ง (G.2A)',   lat: 19.921, lon: 99.849, min_bank_fallback: 392.5 },
+  { id: 6855760, name: 'แม่น้ำกก สะพานสบกก',            lat: 20.228, lon: 99.882, min_bank_fallback: 360.0 },
+  { id: 3303,    name: 'แม่น้ำจัน บ้านหัวสะพาน (Kh.89)', lat: 20.158, lon: 99.843, min_bank_fallback: 410.0 },
+  { id: 3301,    name: 'แม่น้ำอิง บ้านน้ำอิง (I.14)',    lat: 19.833, lon: 100.088, min_bank_fallback: 355.0 },
 ];
 
+// thaiwater.net มีเฉพาะเขื่อนใหญ่ 17 แห่ง ไม่มีเขื่อนในเชียงราย
+// ใช้ แม่งัด (id=53) upstream จากเชียงราย เป็น dam pressure proxy
 const DAM_META = [
-  { code: 'huai_sak',  name: 'อ่างเก็บน้ำห้วยสัก', capacity_mcm: 117 },
-  { code: 'mae_fang',  name: 'อ่างเก็บน้ำแม่ฝาง',   capacity_mcm:  48 },
+  { id: 53, name: 'เขื่อนแม่งัดสมบูรณ์ชล (upstream proxy)', capacity_mcm: 265, lat: 19.163, lon: 98.934 },
 ];
 
 // Shelter data cached 1 hour (Overpass rate-limited)
@@ -279,57 +283,70 @@ const fetchWithTimeout = (url, opts = {}, ms = 8000) => {
 
 // --- ENDPOINTS ---
 
-// ── River water levels — thaiwater.net public API ─────────────────────────────
-app.get('/api/water-levels', async (_req, res) => {
+// ── River water levels — thaiwater.net v3 API (numeric station IDs) ───────────
+const fetchWaterLevelStation = async (st) => {
   const today = new Date();
-  const y = today.getFullYear();
-  const m = String(today.getMonth() + 1).padStart(2, '0');
-  const d = String(today.getDate()).padStart(2, '0');
+  const end = today.toISOString().slice(0, 10);
+  const start = new Date(today - 86400000).toISOString().slice(0, 10);
+  const url = `https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel_graph?station_type=tele_waterlevel&station_id=${st.id}&start_date=${start}&end_date=${end}`;
+  try {
+    const r = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 7000);
+    if (!r.ok) return { ...st, level: null, status: 'offline' };
+    const json = await r.json();
+    const data = json?.data ?? {};
+    const graphData = data.graph_data ?? [];
 
-  const results = await Promise.allSettled(
-    RIVER_STATIONS.map(async st => {
-      const url = `https://api.thaiwater.net/api/v1/thaiwater/api/public/waterlevel_report?station_id=${encodeURIComponent(st.id)}&YYYY=${y}&MM=${m}&DD=${d}`;
-      try {
-        const r = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 6000);
-        if (!r.ok) return { ...st, level: null, status: 'offline' };
-        const json = await r.json();
-        const latest = json?.result?.[0] ?? json?.data?.[0] ?? json?.[0] ?? null;
-        const level   = parseFloat(latest?.water_level ?? latest?.wl ?? latest?.msl) || null;
-        const warn    = parseFloat(latest?.warning_level) || null;
-        const crit    = parseFloat(latest?.critical_level) || null;
-        return { ...st, level, warning_level: warn, critical_level: crit, status: level != null ? 'online' : 'nodata' };
-      } catch {
-        return { ...st, level: null, status: 'error' };
-      }
-    })
-  );
+    // ค่าล่าสุดที่ไม่เป็น null
+    const nonNull = graphData.filter(p => p.value != null);
+    const latest  = nonNull.length ? nonNull[nonNull.length - 1] : null;
+    const level   = latest ? parseFloat(latest.value) : null;
 
+    // ขอบตลิ่ง (masl) ใช้เป็น warning threshold เมื่อ warning_level ไม่มี
+    const warn = parseFloat(data.warning_level) || parseFloat(data.min_bank) || st.min_bank_fallback || null;
+    const crit = parseFloat(data.critical_level) || null;
+
+    return {
+      ...st,
+      level,
+      warning_level: warn,
+      critical_level: crit,
+      discharge: latest?.discharge ?? null,
+      status: level != null ? 'online' : 'nodata',
+    };
+  } catch {
+    return { ...st, level: null, status: 'error' };
+  }
+};
+
+app.get('/api/water-levels', async (_req, res) => {
+  const results = await Promise.allSettled(RIVER_STATIONS.map(fetchWaterLevelStation));
   res.json(results.map((r, i) =>
     r.status === 'fulfilled' ? r.value : { ...RIVER_STATIONS[i], level: null, status: 'error' }
   ));
 });
 
-// ── Dam levels — thaiwater.net reservoir API ──────────────────────────────────
-app.get('/api/dams', async (_req, res) => {
-  const results = await Promise.allSettled(
-    DAM_META.map(async dam => {
-      const url = `https://api.thaiwater.net/api/v1/thaiwater/api/public/reservoir_daily?dam_id=${dam.code}`;
-      try {
-        const r = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 6000);
-        if (!r.ok) return { ...dam, current_mcm: null, percent: null, inflow: null, outflow: null, status: 'offline' };
-        const json = await r.json();
-        const latest  = json?.result?.[0] ?? json?.data?.[0] ?? json?.[0] ?? null;
-        const current = parseFloat(latest?.storage ?? latest?.volume ?? latest?.dam_storage) || null;
-        const inflow  = parseFloat(latest?.inflow) || null;
-        const outflow = parseFloat(latest?.outflow ?? latest?.release) || null;
-        const percent = current ? Math.min(Math.round((current / dam.capacity_mcm) * 100), 110) : null;
-        return { ...dam, current_mcm: current, percent, inflow, outflow, status: 'online' };
-      } catch {
-        return { ...dam, current_mcm: null, percent: null, inflow: null, outflow: null, status: 'error' };
-      }
-    })
-  );
+// ── Dam levels — thaiwater.net v3 analyst/dam (numeric dam ID) ───────────────
+const fetchDamLevel = async (dam) => {
+  const url = `https://api-v3.thaiwater.net/api/v1/thaiwater30/analyst/dam`;
+  try {
+    const r = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 7000);
+    if (!r.ok) return { ...dam, current_mcm: null, percent: null, status: 'offline' };
+    const json = await r.json();
+    const hourly = json?.data?.dam_hourly ?? [];
+    const rec = hourly.find(h => h?.dam?.id === dam.id);
+    if (!rec) return { ...dam, current_mcm: null, percent: null, status: 'nodata' };
+    const current = parseFloat(rec.dam_storage) || null;
+    const percent = parseFloat(rec.dam_storage_percent) || (current ? Math.min(Math.round((current / dam.capacity_mcm) * 100), 110) : null);
+    const inflow  = parseFloat(rec.dam_inflow) || null;
+    const outflow = parseFloat(rec.dam_released) || null;
+    return { ...dam, current_mcm: current, percent, inflow, outflow, status: 'online' };
+  } catch {
+    return { ...dam, current_mcm: null, percent: null, status: 'error' };
+  }
+};
 
+app.get('/api/dams', async (_req, res) => {
+  const results = await Promise.allSettled(DAM_META.map(fetchDamLevel));
   res.json(results.map((r, i) =>
     r.status === 'fulfilled' ? r.value : { ...DAM_META[i], current_mcm: null, percent: null, status: 'error' }
   ));
@@ -394,42 +411,18 @@ app.get('/api/warnings', async (_req, res) => {
 app.get('/api/route-risk', async (_req, res) => {
   const [weather, traffic] = await Promise.all([fetchLiveWeather(), fetchLiveTraffic()]);
 
-  // Fetch all Chiang Rai river stations in parallel
-  const today = new Date();
-  const y = today.getFullYear(), m = String(today.getMonth()+1).padStart(2,'0'), d = String(today.getDate()).padStart(2,'0');
+  // ใช้ helper functions เดียวกับ /api/water-levels และ /api/dams
+  const [stationResults, damResults] = await Promise.all([
+    Promise.allSettled(RIVER_STATIONS.map(fetchWaterLevelStation)),
+    Promise.allSettled(DAM_META.map(fetchDamLevel)),
+  ]);
 
-  const stationFetches = await Promise.allSettled(
-    RIVER_STATIONS.map(async st => {
-      const url = `https://api.thaiwater.net/api/v1/thaiwater/api/public/waterlevel_report?station_id=${encodeURIComponent(st.id)}&YYYY=${y}&MM=${m}&DD=${d}`;
-      const r = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 5000);
-      if (!r.ok) return null;
-      const json = await r.json();
-      const latest = json?.result?.[0] ?? json?.data?.[0] ?? json?.[0] ?? null;
-      const level = parseFloat(latest?.water_level ?? latest?.wl ?? latest?.msl) || null;
-      const warn  = parseFloat(latest?.warning_level) || null;
-      return level != null ? { id: st.id, level, warning_level: warn } : null;
-    })
-  );
-  const waterLevels = stationFetches
-    .map(r => r.status === 'fulfilled' ? r.value : null)
+  const waterLevels = stationResults
+    .map(r => r.status === 'fulfilled' && r.value?.level != null ? r.value : null)
     .filter(Boolean);
 
-  const damFetches = await Promise.allSettled(
-    DAM_META.map(async dam => {
-      const r = await fetchWithTimeout(
-        `https://api.thaiwater.net/api/v1/thaiwater/api/public/reservoir_daily?dam_id=${dam.code}`,
-        { headers: { Accept: 'application/json' } }, 5000
-      );
-      if (!r.ok) return null;
-      const json = await r.json();
-      const latest = json?.result?.[0] ?? json?.data?.[0] ?? json?.[0] ?? null;
-      const current = parseFloat(latest?.storage ?? latest?.volume ?? latest?.dam_storage) || null;
-      const percent = current ? Math.min(Math.round((current / dam.capacity_mcm) * 100), 110) : null;
-      return percent != null ? { code: dam.code, percent } : null;
-    })
-  );
-  const damLevels = damFetches
-    .map(r => r.status === 'fulfilled' ? r.value : null)
+  const damLevels = damResults
+    .map(r => r.status === 'fulfilled' && r.value?.percent != null ? r.value : null)
     .filter(Boolean);
 
   const result = {};
