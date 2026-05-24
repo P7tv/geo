@@ -120,9 +120,20 @@ GET /frontend/shared/station_all    (10,729 stations, province_code=57 คือ
 out center;
 ```
 
-**⚠️ ต้องตรวจสอบ:**
-- ทดสอบแล้วได้ 1 facility — bbox `(19.2, 99.5, 20.6, 100.5)` อาจแคบเกินไป
-- ทดสอบ query ก่อนได้ที่ https://overpass-turbo.eu/
+**ผล overpass-turbo ทดสอบ 2026-05-24:**
+
+| Type | Thailand only (bbox fixed) | หมายเหตุ |
+|---|---|---|
+| hospital | 59 named + ~16 unnamed | รวม โรงพยาบาลชุมชน, รพ.สต. |
+| fire_station | 15 | ครอบคลุมทุกอำเภอ |
+| police | 96 | รวมด่านตรวจ, ป้อมตำรวจ |
+| assembly_point | 0 | ไม่มีใน OSM เชียงราย |
+
+**ปัญหาที่พบและแก้แล้ว:**
+- bbox เดิม `(19.2,99.5,20.6,100.5)` ดึง Laos 19 entries, Myanmar 3, China 10 มาด้วย → ตัดเป็น `(19.2,99.5,20.48,100.4)`
+- query เดิมใช้แค่ `node+way` → โรงพยาบาลใหญ่ที่ map เป็น `relation` หายหมด → เปลี่ยนเป็น `nwr` (node+way+relation)
+- `shelter` ใน OSM ส่วนใหญ่คือ gazebo/กระท่อมนา ไม่ใช่ที่อพยพ → ตัดออกจาก query แล้ว
+- timeout 25s สั้นเกินสำหรับ 400+ features → เพิ่มเป็น 60s
 
 ---
 
@@ -157,20 +168,56 @@ mapInstance.Overlays.remove(overlay)
 
 | | |
 |---|---|
-| **Docs** | https://disaster.gistda.or.th/services/open-api |
-| **Base URL** | `https://api.sphere.gistda.or.th/services/info` |
-| **Auth** | API Key (VITE_GISTDA_DATA_KEY ใน .env) |
+| **Docs (Swagger UI)** | https://disaster.gistda.or.th/services/open-api |
+| **Base URL จริง** | `https://api-gateway.gistda.or.th/api/2.0/resources` |
+| **Auth** | HTTP Header: `API-Key: <VITE_GISTDA_DATA_KEY>` |
+
+> ⚠️ **Base URL เก่าที่ผิด**: `api.sphere.gistda.or.th/services/info/disaster-flood` — ไม่ใช่ endpoint จริง
+> ค้นพบ URL จริงจาก JS bundle (`5893-*.js` → module 95893) ของ disaster.gistda.or.th
 
 **Endpoint ที่ใช้จริง:**
 ```
-GET /disaster-flood?key=VITE_GISTDA_DATA_KEY
+GET /features/flood/7days?pv_idn=57&limit=1000
+```
+(`pv_idn=57` = เชียงราย — ใช้ ID ตัวเลข ไม่ใช่ชื่อจังหวัด)
+
+**Endpoints น้ำท่วมทั้งหมด:**
+```
+GET /features/flood/1day     พื้นที่น้ำท่วม 1 วัน
+GET /features/flood/3days    พื้นที่น้ำท่วม 3 วัน
+GET /features/flood/7days    พื้นที่น้ำท่วม 7 วัน (ที่ใช้)
+GET /features/flood/30days   พื้นที่น้ำท่วม 30 วัน
+GET /features/flood-freq     น้ำท่วมซ้ำซาก (historical)
 ```
 
-**⚠️ ต้องตรวจสอบ:**
-- Response ไม่มีข้อมูลเชียงราย (0 points) — ตรวจสอบ:
-  1. field ชื่อ province ใช้ `province`, `province_name`, หรืออื่น?
-  2. ค่าอาจเป็น `"เชียงราย"` หรือ `"Chiang Rai"` หรือ province code?
-  3. ดูตัวอย่าง response จริงใน docs แล้วปรับ filter ใน `fetchGistdaFloodData()`
+**Query parameters:**
+| param | ชนิด | ความหมาย |
+|---|---|---|
+| `pv_idn` | string | Province ID (57 = เชียงราย) |
+| `ap_idn` | string | District ID |
+| `tb_idn` | string | Subdistrict ID |
+| `bbox`   | string | `x-min,y-min,x-max,y-max` |
+| `limit`  | integer | จำนวน records (default 1, max 10000) |
+| `offset` | integer | ข้าม N records แรก |
+
+**Response format (GeoJSON FeatureCollection):**
+```json
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "pv_tn": "เชียงราย", "ap_tn": "แม่สาย", "area_rai": 1234.5, ... },
+      "geometry": { "type": "Polygon", "coordinates": [[...]] }
+    }
+  ],
+  "numberMatched": 0,
+  "numberReturned": 0
+}
+```
+> `features[]` เป็น array ว่างเมื่อไม่มีน้ำท่วมในช่วงนั้น — ไม่ใช่ error
+
+**สถานะ:** `features[]` ว่าง = ไม่มีน้ำท่วมที่ active (ทดสอบ 2026-05-24 ซึ่งไม่ใช่ฤดูน้ำหลาก)
 
 ---
 
@@ -241,8 +288,8 @@ supabase
 | TMD Warnings | 🟡 Online แต่ว่าง | Response format ไม่ตรง |
 | thaiwater.net water | 🔴 OFFLINE | Station ID ผิดทั้งหมด |
 | thaiwater.net dam | 🔴 OFFLINE | Dam code ผิดทั้งหมด |
-| Overpass (shelters) | 🟡 1 facility | Bbox หรือ tag อาจแคบเกิน |
+| Overpass (shelters) | 🟢 แก้แล้ว | 59 รพ. + 15 สถานีดับเพลิง + 96 ตำรวจ |
 | GISTDA Sphere Map | 🟢 ใช้งานได้ | — |
-| GISTDA Flood Data | 🟡 Online แต่ 0 pts | Filter province ไม่ตรง |
+| GISTDA Flood Data | 🟢 Endpoint ถูกแล้ว | 0 pts = ไม่มีน้ำท่วม ณ วันที่ทดสอบ (ไม่ใช่ bug) |
 | OSRM | 🟢 ใช้งานได้ | ไม่มี flood weight |
 | Supabase | 🟢 Connected | Table ว่าง ยังไม่มี Jetson |

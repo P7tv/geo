@@ -357,14 +357,14 @@ app.get('/api/shelters', async (_req, res) => {
   if (shelterCache.data && Date.now() - shelterCache.ts < SHELTER_TTL) {
     return res.json(shelterCache.data);
   }
-  const query = `[out:json][timeout:25];
+  // bbox (19.2,99.5,20.48,100.4) = เชียงราย only, ตัด Laos/Myanmar/China border noise
+  // nwr = node+way+relation ครอบคลุม polygon hospital ขนาดใหญ่
+  const query = `[out:json][timeout:60];
 (
-  node["amenity"="hospital"](19.2,99.5,20.6,100.5);
-  way["amenity"="hospital"](19.2,99.5,20.6,100.5);
-  node["amenity"="fire_station"](19.2,99.5,20.6,100.5);
-  node["amenity"="shelter"](19.2,99.5,20.6,100.5);
-  node["emergency"="assembly_point"](19.2,99.5,20.6,100.5);
-  node["amenity"="police"](19.2,99.5,20.6,100.5);
+  nwr["amenity"="hospital"](19.2,99.5,20.48,100.4);
+  nwr["amenity"="fire_station"](19.2,99.5,20.48,100.4);
+  nwr["amenity"="police"]["name"](19.2,99.5,20.48,100.4);
+  node["emergency"="assembly_point"](19.2,99.5,20.48,100.4);
 );
 out center;`;
 
@@ -372,19 +372,20 @@ out center;`;
     const r = await fetchWithTimeout(
       'https://overpass-api.de/api/interpreter',
       { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `data=${encodeURIComponent(query)}` },
-      28000
+      65000
     );
     if (!r.ok) return res.status(502).json({ error: `Overpass ${r.status}` });
     const json = await r.json();
+    const THAI_LON_MAX = 100.4, THAI_LAT_MAX = 20.48;
     const shelters = (json.elements ?? [])
       .map(el => ({
         id:   el.id,
-        name: el.tags?.['name:th'] ?? el.tags?.name ?? el.tags?.amenity ?? 'สถานที่ฉุกเฉิน',
+        name: el.tags?.['name:th'] ?? el.tags?.name ?? 'สถานที่ฉุกเฉิน',
         type: el.tags?.amenity ?? el.tags?.emergency ?? 'shelter',
         lat:  el.lat ?? el.center?.lat,
         lon:  el.lon ?? el.center?.lon,
       }))
-      .filter(s => s.lat && s.lon);
+      .filter(s => s.lat && s.lon && s.lon <= THAI_LON_MAX && s.lat <= THAI_LAT_MAX);
     shelterCache = { data: shelters, ts: Date.now() };
     res.json(shelters);
   } catch (err) {
@@ -587,11 +588,14 @@ app.get('/api/ai/briefing', async (_req, res) => {
   }
 });
 
-// GISTDA Open Data Flood proxy (to bypass frontend CORS restrictions)
+// GISTDA Open Data Flood proxy — api-gateway.gistda.or.th (real endpoint, confirmed from JS bundle)
+// pv_idn=57 = เชียงราย, auth via API-Key header
+// Returns GeoJSON FeatureCollection; features[] is empty when no active flooding (not an error)
 app.get('/api/gistda/flood', async (_req, res) => {
   try {
     const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
-    const response = await fetch(`https://api.sphere.gistda.or.th/services/info/disaster-flood?key=${dataKey}`);
+    const url = 'https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/7days?pv_idn=57&limit=1000';
+    const response = await fetch(url, { headers: { 'API-Key': dataKey } });
     if (!response.ok) throw new Error(`GISTDA API returned HTTP ${response.status}`);
     const data = await response.json();
     res.json(data);

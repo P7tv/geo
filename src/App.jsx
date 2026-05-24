@@ -491,18 +491,35 @@ export default function App() {
       const res = await fetch('http://localhost:3001/api/gistda/flood');
       if (!res.ok) throw new Error(`GISTDA API ${res.status}`);
       const data = await res.json();
-      if (!Array.isArray(data)) return;
-      const pts = data
-        .filter(p => p.province === 'เชียงราย' || p.province_name === 'เชียงราย' || p.province === 'Chiang Rai')
-        .map(p => ({
-          name:     p.amphoe || p.district || 'GISTDA',
-          lat:      parseFloat(p.latitude  || p.lat),
-          lon:      parseFloat(p.longitude || p.lon),
-          severity: parseFloat(p.severity  || 0.8),
-        }));
+      // API returns GeoJSON FeatureCollection; features[] empty when no active flooding (not an error)
+      const features = data?.features ?? [];
+      if (features.length === 0) {
+        addToast('GISTDA: ไม่มีข้อมูลน้ำท่วมที่ใช้งานอยู่ในปัจจุบัน (7 วัน)', 'info');
+        return;
+      }
+      const pts = features.map(f => {
+        const p = f.properties ?? {};
+        // Extract centroid from geometry (Point → direct, Polygon → first coordinate ring centroid)
+        let lon = null, lat = null;
+        if (f.geometry?.type === 'Point') {
+          [lon, lat] = f.geometry.coordinates;
+        } else if (f.geometry?.coordinates) {
+          const ring = f.geometry.coordinates[0];
+          const lons = ring.map(c => c[0]);
+          const lats = ring.map(c => c[1]);
+          lon = lons.reduce((a, b) => a + b, 0) / lons.length;
+          lat = lats.reduce((a, b) => a + b, 0) / lats.length;
+        }
+        return {
+          name:     p.ap_tn || p.pv_tn || 'GISTDA',
+          lat:      lat,
+          lon:      lon,
+          severity: parseFloat(p.area_rai ? Math.min(p.area_rai / 10000, 1) : 0.8),
+        };
+      }).filter(pt => pt.lat && pt.lon);
       if (pts.length > 0) {
         setGistdaRiskPoints(pts);
-        addToast(`ดึงข้อมูลจุดเสี่ยงน้ำท่วม GISTDA สำเร็จ (${pts.length} พิกัด)`, 'success');
+        addToast(`ดึงข้อมูลจุดเสี่ยงน้ำท่วม GISTDA สำเร็จ (${pts.length} พื้นที่)`, 'success');
       }
     } catch (_) {}
   };
