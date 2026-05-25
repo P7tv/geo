@@ -272,7 +272,7 @@ body {
   background: #dde5ee;
 }
 
-.map-center > div:not(.map-badge-v2):not(.map-active-route) {
+.map-center > div:not(.map-badge-v2):not(.map-active-route):not(.map-legend) {
   width: 100%;
   height: 100%;
 }
@@ -1195,6 +1195,119 @@ body {
 @keyframes syncPulse {
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(1.6); opacity: 0.4; }
+}
+
+/* ── Route metrics row (Safety Score / Flood Exposure / Affected Roads) ── */
+.rc-metrics {
+  display: flex;
+  gap: 4px;
+  padding: 8px 0 4px;
+  border-top: 1px solid var(--border);
+}
+.rc-metric {
+  flex: 1;
+  text-align: center;
+  padding: 4px 2px;
+  background: var(--bg-base);
+  border-radius: var(--radius-sm);
+}
+.rc-metric-val {
+  font-size: 15px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  color: var(--text-1);
+  line-height: 1.2;
+}
+.rc-metric-lbl {
+  font-size: 9px;
+  color: var(--text-3);
+  margin-top: 2px;
+  font-family: var(--font-en);
+  white-space: nowrap;
+}
+
+/* ── Risk Factors bar chart ── */
+.rc-risk-factors {
+  padding: 8px 0 4px;
+  border-top: 1px solid var(--border);
+}
+.rf-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-3);
+  font-family: var(--font-en);
+  margin-bottom: 6px;
+}
+.rf-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.rf-label {
+  font-size: 10px;
+  color: var(--text-2);
+  width: 80px;
+  flex-shrink: 0;
+  font-family: var(--font-th);
+}
+.rf-track {
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.rf-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+.rf-pct {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  width: 28px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+/* ── Map legend (bottom-right) ── */
+.map-legend {
+  position: absolute;
+  bottom: 56px;
+  right: 10px;
+  z-index: 10;
+  background: rgba(255,255,255,0.95);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+.legend-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-3);
+  font-family: var(--font-en);
+  margin-bottom: 5px;
+}
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-2);
+  margin-bottom: 3px;
+}
+.legend-dot {
+  width: 10px;
+  height: 4px;
+  border-radius: 2px;
+  display: inline-block;
+  flex-shrink: 0;
 }
 
 /* Print */

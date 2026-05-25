@@ -5,8 +5,10 @@
 const PROXY_BASE = 'http://localhost:3001/api/tmd/forecast';
 
 export const getHourlyForecast = async (lat, lon) => {
-  const date = new Date().toISOString().slice(0, 10);
-  const hour = new Date().getHours();
+  // ใช้เวลากรุงเทพ (UTC+7) เพื่อให้ date และ hour ตรงกันเสมอ
+  const bangkokNow = new Date(Date.now() + 7 * 3_600_000);
+  const date = bangkokNow.toISOString().slice(0, 10);
+  const hour = bangkokNow.getUTCHours();
 
   const params = new URLSearchParams({ lat, lon, date, hour, duration: 6 });
   const response = await fetch(`${PROXY_BASE}?${params}`);

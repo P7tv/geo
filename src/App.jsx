@@ -3,7 +3,7 @@ import './index.css';
 
 import { getVehicleRouteSummary, getAiBriefing, getTerminalLogs } from './services/vehicleApi';
 import { getHourlyForecast } from './services/tmdApi';
-import { getWaterLevels, getDamLevels, getShelters, getTmdWarnings, getRouteRisk } from './services/externalApi';
+import { getWaterLevels, getDamLevels, getShelters, getTmdWarnings } from './services/externalApi';
 import { renderVehicleTrafficBadges, getCongestionColor } from './components/VehicleTrafficLayer';
 
 const WEATHER_STATIONS = [
@@ -31,6 +31,7 @@ const ROUTES_BASE = [
 const TOGGLE_LABELS = {
   flood: 'น้ำท่วม', wind: 'ลม', history: 'ประวัติ',
   cloud: 'เมฆ', satellite: 'ดาวเทียม', sarMask: 'SAR', vehicles: 'ยานพาหนะ',
+  histFreq: 'ความถี่น้ำท่วม',
 };
 
 const CONGESTION_CONFIG = {
@@ -135,7 +136,7 @@ const SHELTER_ICONS = {
 const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
-  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], sarPolygons: [], trafficMarkers: [], riskCircles: [], rainAreas: [], shelterMarkers: [] });
+  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], sarPolygons: [], trafficMarkers: [], riskCircles: [], rainAreas: [], shelterMarkers: [], floodFreqLayer: null });
   const [loading, setLoading] = useState(true);
   const [mapError, setMapError] = useState(false);
 
@@ -237,9 +238,11 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       if (!d || !d.points || d.points.length < 2) return;
       
       const isActive = route.id === activeRoute;
+      const rp = d.risk ?? 0;
+      const riskHex = rp >= 70 ? '#ef4444' : rp >= 40 ? '#f59e0b' : '#22c55e';
       const lineColor = toggles.vehicles
-        ? getCongestionColor(route.id, vehicleData, route.color)
-        : (isActive ? route.color : '#2d3e50'); // standard hex color safety
+        ? getCongestionColor(route.id, vehicleData, riskHex)
+        : (isActive ? riskHex : riskHex + '66');
 
       const coords = d.points
         .filter(p => p && !isNaN(p.lon) && !isNaN(p.lat))
@@ -347,6 +350,27 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     }
   }, [stationData, toggles.cloud]);
 
+  // GISTDA flood-freq WMS layer (historical flood frequency raster)
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    if (layersRef.current.floodFreqLayer) {
+      mapInstance.current.Layers.remove(layersRef.current.floodFreqLayer);
+      layersRef.current.floodFreqLayer = null;
+    }
+    if (!toggles.histFreq) return;
+    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    // Layer name 6799ab8c... confirmed from GetCapabilities; queryable=0 so visual-only
+    const layer = new window.sphere.Layer('flood-freq-wms', {
+      type: window.sphere.LayerType.WMS,
+      url: 'https://api-gateway.gistda.or.th/api/2.0/resources/maps/flood-freq/wms?',
+      extraQuery: `LAYERS=6799ab8c6f832362f99030e6&STYLES=&api_key=${dataKey}`,
+      zoomRange: { min: 1, max: 20 },
+      zIndex: 3,
+    });
+    mapInstance.current.Layers.add(layer);
+    layersRef.current.floodFreqLayer = layer;
+  }, [toggles.histFreq]);
+
   // Emergency facilities from OSM
   useEffect(() => {
     if (!mapInstance.current || !window.sphere || !shelters?.length) return;
@@ -392,7 +416,7 @@ export default function App() {
   const [stationData, setStationData] = useState({});
   const [routePaths, setRoutePaths] = useState({});
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
-  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, cloud: true, satellite: true, sarMask: true, vehicles: true });
+  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, cloud: true, satellite: true, sarMask: true, vehicles: true, histFreq: false });
 
   const [incidents, setIncidents] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -548,7 +572,7 @@ export default function App() {
       setStationData(results);
       addToast(`เชื่อมต่อข้อมูลอากาศ TMD สำเร็จ (${successCount} สถานี)`, 'success');
     } else {
-      // TMD server offline or token expired fallback (Chiang Rai stations)
+      // Both TMD and Open-Meteo unavailable — last-resort static climatological normals
       const fallbacks = {
         'CR_CITY':       { tc: 27.5, rr: 3.2, ws: 2.8, wd: 200 },
         'MAE_SAI':       { tc: 25.8, rr: 14.2, ws: 5.1, wd: 175 },
@@ -562,59 +586,45 @@ export default function App() {
     }
   };
 
-  const cityCur = stationData['CR_CITY'] || { tc: null, rr: null, ws: null, wd: null };
+  const cityCur = stationData['CR_CITY'] || { tc: null, rain: null, ws10m: null, wd10m: null };
 
   const fetchRealRoutes = async () => {
-    // Chiang Rai: เมือง → แม่สาย / เทิง / เวียงป่าเป้า
-    const coords = {
-      A: [[99.832, 19.908], [99.882, 20.434]],   // ทล.1 เมือง→แม่สาย
-      B: [[99.832, 19.908], [100.074, 19.977]],  // ทล.118 เมือง→เทิง
-      C: [[99.832, 19.908], [99.858, 19.375]],   // ทางลัดเวียงป่าเป้า
-    };
-
-    const [mlRisks, ...osrmResults] = await Promise.allSettled([
-      getRouteRisk(),
-      ...['A', 'B', 'C'].map(id =>
-        fetch(`https://router.project-osrm.org/route/v1/driving/${coords[id][0][0]},${coords[id][0][1]};${coords[id][1][0]},${coords[id][1][1]}?overview=full&geometries=geojson`)
-          .then(r => r.json())
-      ),
-    ]);
-
-    const mlData = mlRisks.status === 'fulfilled' ? mlRisks.value : null;
-    const paths = {};
-
-    ['A', 'B', 'C'].forEach((id, i) => {
-      const osrm = osrmResults[i];
-      if (osrm.status !== 'fulfilled' || !osrm.value.routes?.[0]) return;
-      const route = osrm.value.routes[0];
-      const points = route.geometry.coordinates.map(c => ({ lon: c[0], lat: c[1] }));
-
-      let risk, depth;
-      if (mlData?.[id]) {
-        risk  = mlData[id].risk;
-        depth = mlData[id].depth_est;
-      } else {
-        // Geometric fallback when ML endpoint unavailable
+    try {
+      const data = await fetch('http://localhost:3001/api/flood-routes').then(r => r.json());
+      const paths = {};
+      for (const [id, route] of Object.entries(data)) {
+        if (!route.points?.length) continue;
+        paths[id] = {
+          points:   route.points,
+          distance: route.distance_km?.toFixed(1) ?? '—',
+          duration: route.duration_min ?? 0,
+          risk:     route.risk  ?? 0,
+          depth:    route.depth ?? 0,
+          features: route.features ?? {},
+        };
+      }
+      setRoutePaths(paths);
+    } catch {
+      // Geometric fallback when backend unavailable
+      const fallbackCoords = {
+        A: [[99.832,19.908],[99.850,20.025],[99.866,20.175],[99.882,20.434]],
+        B: [[99.832,19.908],[99.900,19.924],[99.983,19.952],[100.074,19.977]],
+        C: [[99.832,19.908],[99.840,19.808],[99.851,19.600],[99.858,19.375]],
+      };
+      const paths = {};
+      ['A','B','C'].forEach(id => {
+        const points = fallbackCoords[id].map(([lon, lat]) => ({ lon, lat }));
         let score = 0;
         points.forEach(p => {
           gistdaRiskPoints.forEach(pt => { const d = getDist(p, pt); if (d < 1200) score += (1 - d/1200) * pt.severity; });
           incidents.forEach(inc => { const d = getDist(p, inc); if (d < 1200) score += (1 - d/1200) * inc.severity * 2.5; });
         });
         const rain = Math.max(1, (cityCur.rain || 0) / 4);
-        risk  = Math.min(Math.round((score / points.length) * 1000 * rain), 99);
-        depth = Math.max(0.1, risk / 65).toFixed(1);
-      }
-
-      paths[id] = {
-        points,
-        distance: (route.distance / 1000).toFixed(1),
-        duration: Math.round(route.duration / 60),
-        risk,
-        depth,
-      };
-    });
-
-    setRoutePaths(paths);
+        const risk  = Math.min(Math.round((score / points.length) * 1000 * rain), 99);
+        paths[id] = { points, distance: '—', duration: 0, risk, depth: Math.max(0.1, risk / 65).toFixed(1) };
+      });
+      setRoutePaths(paths);
+    }
   };
 
   useEffect(() => {
@@ -655,7 +665,7 @@ export default function App() {
 
     setChatMessages([{
       role: 'ai',
-      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัย<strong>เชียงราย</strong><br/>ครอบคลุม 4 อำเภอ: เมือง · แม่สาย · เทิง · เวียงป่าเป้า<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA sphere · TMD · OSRM · Supabase CCTV · Sentinel-1A SAR</span>',
+      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัย<strong>เชียงราย</strong><br/>ครอบคลุม 4 อำเภอ: เมือง · แม่สาย · เทิง · เวียงป่าเป้า<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA sphere · TMD · NetworkX A* · Supabase CCTV · Sentinel-1A SAR</span>',
       time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
     }]);
 
@@ -860,18 +870,30 @@ export default function App() {
                   >🔍 XAI</button>
                 </div>
                 {allRoutesData.map(route => {
-                  const riskPct = route.risk ?? 0;
+                  const riskPct  = route.risk ?? 0;
                   const riskColor = riskPct >= 70 ? 'var(--danger)' : riskPct >= 40 ? 'var(--warn)' : 'var(--safe)';
-                  const statusCls = route.id === 'A' ? 'safe' : route.id === 'B' ? 'warn' : 'danger';
-                  const vd = vehicleData[route.id];
+                  const statusLbl = riskPct >= 70 ? 'เสี่ยงสูง' : riskPct >= 40 ? 'เสี่ยงปานกลาง' : 'ปลอดภัย';
+                  const statusCls = riskPct >= 70 ? 'danger' : riskPct >= 40 ? 'warn' : 'safe';
+                  const safety    = 100 - riskPct;
+                  const ft        = route.features ?? {};
+                  const floodExp  = Math.round((ft.f_flood_depth ?? 0) * 100);
+                  const affRoads  = Math.round((ft.f_historical  ?? 0) * 100);
+                  const vd        = vehicleData[route.id];
+                  const isActive  = activeRoute === route.id;
+                  const riskFactors = [
+                    { label: 'ระดับน้ำท่วม',   val: ft.f_flood_depth ?? 0 },
+                    { label: 'แนวโน้มน้ำ',      val: ft.f_depth_trend ?? 0 },
+                    { label: 'ประวัติน้ำท่วม', val: ft.f_historical  ?? 0 },
+                    { label: 'ความเสี่ยงดิน',  val: ft.f_soil        ?? 0 },
+                  ];
                   return (
                     <div
                       key={route.id}
-                      className={`route-card-v2 ${activeRoute === route.id ? 'active' : ''}`}
+                      className={`route-card-v2 ${isActive ? 'active' : ''}`}
                       onClick={() => { setActiveRoute(route.id); addLog(route.name); }}
                     >
                       <div className="rc-top">
-                        <div className="rc-letter" style={{ background: route.color }}>{route.id}</div>
+                        <div className="rc-letter" style={{ background: riskPct >= 70 ? '#ef4444' : riskPct >= 40 ? '#f59e0b' : '#22c55e' }}>{route.id}</div>
                         <div className="rc-info">
                           <div className="rc-name">{route.name}</div>
                           <div className="rc-dest">{route.desc ?? ''}</div>
@@ -882,25 +904,63 @@ export default function App() {
                         <div className="rc-bar-fill" style={{ width: `${riskPct}%`, background: riskColor }} />
                       </div>
                       <div className="rc-meta">
-                        <span className={`rc-status-tag ${statusCls}`}>{route.status}</span>
+                        <span className={`rc-status-tag ${statusCls}`}>{statusLbl}</span>
                         <span><strong>{route.duration ?? '--'}</strong> น.</span>
                         <span><strong>{route.distance ?? '--'}</strong> กม.</span>
                         {vd && <span>🚗 <strong>{vd.vehicle_count ?? 0}</strong></span>}
                       </div>
-                      {activeRoute === route.id && (
-                        <div className="rc-actions" onClick={e => e.stopPropagation()}>
-                          <button className="rc-btn xai" onClick={fetchRouteExplanation}>🔍 XAI</button>
-                          <button
-                            className="rc-btn override"
-                            onClick={() => {
-                              const reason = window.prompt('เหตุผล Override:');
-                              if (!reason) return;
-                              const officer = window.prompt('ชื่อเจ้าหน้าที่:') || 'ผบ.เหตุการณ์';
-                              addLog(`Override: ${route.id}`, true, reason, officer);
-                              addToast(`บันทึก Override เส้นทาง ${route.id}`, 'success');
-                            }}
-                          >✋ Override</button>
-                        </div>
+
+                      {isActive && (
+                        <>
+                          {/* Route metrics */}
+                          <div className="rc-metrics">
+                            <div className="rc-metric">
+                              <div className="rc-metric-val" style={{ color: riskColor }}>{safety}</div>
+                              <div className="rc-metric-lbl">Safety Score</div>
+                            </div>
+                            <div className="rc-metric">
+                              <div className="rc-metric-val">{floodExp}%</div>
+                              <div className="rc-metric-lbl">Flood Exposure</div>
+                            </div>
+                            <div className="rc-metric">
+                              <div className="rc-metric-val">{affRoads}%</div>
+                              <div className="rc-metric-lbl">Affected Roads</div>
+                            </div>
+                          </div>
+
+                          {/* Risk factors bar chart */}
+                          <div className="rc-risk-factors" onClick={e => e.stopPropagation()}>
+                            <div className="rf-title">Risk Factors</div>
+                            {riskFactors.map(({ label, val }) => {
+                              const pct = Math.round(val * 100);
+                              const fc  = pct >= 70 ? 'var(--danger)' : pct >= 40 ? 'var(--warn)' : 'var(--safe)';
+                              return (
+                                <div key={label} className="rf-row">
+                                  <span className="rf-label">{label}</span>
+                                  <div className="rf-track">
+                                    <div className="rf-fill" style={{ width: `${pct}%`, background: fc }} />
+                                  </div>
+                                  <span className="rf-pct">{pct}%</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Actions */}
+                          <div className="rc-actions" onClick={e => e.stopPropagation()}>
+                            <button className="rc-btn xai" onClick={fetchRouteExplanation}>🔍 XAI</button>
+                            <button
+                              className="rc-btn override"
+                              onClick={() => {
+                                const reason = window.prompt('เหตุผล Override:');
+                                if (!reason) return;
+                                const officer = window.prompt('ชื่อเจ้าหน้าที่:') || 'ผบ.เหตุการณ์';
+                                addLog(`Override: ${route.id}`, true, reason, officer);
+                                addToast(`บันทึก Override เส้นทาง ${route.id}`, 'success');
+                              }}
+                            >✋ Override</button>
+                          </div>
+                        </>
                       )}
                     </div>
                   );
@@ -974,6 +1034,14 @@ export default function App() {
               shelters={shelters}
             />
 
+            {/* Map legend */}
+            <div className="map-legend">
+              <div className="legend-title">ระดับความเสี่ยง</div>
+              <div className="legend-row"><span className="legend-dot" style={{ background: '#22c55e' }} />ต่ำ (&lt;40%)</div>
+              <div className="legend-row"><span className="legend-dot" style={{ background: '#f59e0b' }} />ปานกลาง (40–70%)</div>
+              <div className="legend-row"><span className="legend-dot" style={{ background: '#ef4444' }} />สูง (&gt;70%)</div>
+            </div>
+
             <div className="map-active-route">
               <div>
                 <div className="mar-label">เส้นทางที่เลือก</div>
@@ -1029,9 +1097,10 @@ export default function App() {
                 {waterLevels
                   ? waterLevels.map(st => {
                       const hasData = st.level != null;
-                      const pctOfWarn = (hasData && st.warning_level) ? st.level / st.warning_level : null;
-                      const cls = !hasData ? 'nodata' : pctOfWarn == null ? 'safe' : pctOfWarn >= 1 ? 'danger' : pctOfWarn >= 0.8 ? 'warn' : 'safe';
-                      const pct = pctOfWarn != null ? Math.min(pctOfWarn * 100, 100) : 0;
+                      const margin = (hasData && st.warning_level) ? st.warning_level - st.level : null;
+                      const dangerPct = margin != null ? Math.max(0, Math.min(100, (1 - margin / 5.0) * 100)) : null;
+                      const cls = !hasData ? 'nodata' : dangerPct == null ? 'safe' : dangerPct >= 100 ? 'danger' : dangerPct >= 60 ? 'warn' : 'safe';
+                      const pct = dangerPct ?? 0;
                       return (
                         <div key={st.id} className="water-station">
                           <div className="water-station-header">
@@ -1044,7 +1113,7 @@ export default function App() {
                             <div className={`water-bar-fill ${cls}`} style={{ width: `${pct}%` }} />
                           </div>
                           <div className="water-station-sub">
-                            {pctOfWarn != null ? `${(pctOfWarn * 100).toFixed(0)}% ของระดับเฝ้าระวัง` : 'ไม่มีข้อมูล'}
+                            {margin != null ? `ห่างจากเฝ้าระวัง ${margin.toFixed(2)} ม.` : 'ไม่มีข้อมูล'}
                           </div>
                         </div>
                       );
@@ -1555,7 +1624,7 @@ export default function App() {
                     สถานีเฝ้าระวังรายงานระดับน้ำสะสมอยู่ในโหมดเฝ้าระวังปานกลาง
                   </p>
 
-                  <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๓. แนะนำเส้นทางและความปลอดภัยทางวิศวกรรม (OSRM Analysis)</h3>
+                  <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๓. แนะนำเส้นทางและความปลอดภัยทางวิศวกรรม (NetworkX A* Flood-Aware Routing)</h3>
                   <p style={{ marginBottom: '20px' }}>
                     เส้นทางเดินหลักในภารกิจกู้ชีพ (Route A - {ROUTES_BASE[0].name}) ประเมินสถานะในเกณฑ์ <strong>{ROUTES_BASE[0].status}</strong> 
                     โดยมีระดับความสูงน้ำขังเฉลี่ยที่ {routePaths.A?.depth ?? '0.0'} เมตร และอัตราเสี่ยงภัยพิบัติ {routePaths.A?.risk ?? '0'}%. 
@@ -1639,7 +1708,7 @@ export default function App() {
       {/* ── Footer ── */}
       <footer className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 14px', background: 'var(--bg-surface)', borderTop: '1px solid var(--border)', fontSize: '9px', color: 'var(--text-3)', flexShrink: 0 }}>
         <span>ระบบวิเคราะห์น้ำท่วม จ.เชียงราย · GISTDA · TMD · DDPM</span>
-        <span>TMD · OSRM · Supabase CCTV · Typhoon AI · {new Date().toLocaleDateString('th-TH')}</span>
+        <span>TMD · NetworkX A* · Supabase CCTV · Typhoon AI · {new Date().toLocaleDateString('th-TH')}</span>
       </footer>
 
     </div>

@@ -23,5 +23,16 @@ dist-ssr
 *.sln
 *.sw?
 
-# AI
+# AI / Editor
 CLAUDE.md
+.claude/
+
+# Large GIS / OSM data (re-downloadable, not for version control)
+*.osm.pbf
+*.osm
+*.pkl
+sr_cri.rar
+sr_cri_extracted/
+
+# LDD soil shapefile (extracted from sr_cri.rar)
+เชียงราย/
