@@ -44,7 +44,7 @@ const FORECAST_DURATION    = 1;               // hours of TMD forecast to fetch
 
 // --- API CONFIG & INITIALIZATION ---
 
-const TMD_TOKEN = process.env.TMD_TOKEN || 'eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6ImI5YzJkODUwZTA1OWJiYTE5NDliYzhjZTEyODllZWIyMjFlYjA4MTE5NGY4MTBhYWRhMjNiNTExMzdmZWQzZWFjMWY1YWI4NzNmMGNhZTFjIn0.eyJhdWQiOiIyIiwianRpIjoiYjljMmQ4NTBlMTU5YmJhMTk0OWJjOGNlMTI4OWVlYjIyMWViMDgxMTk0ZjgxMGFhZGEyM2I1MTEzN2ZlZDNlYWMxZjVhYjg3M2YwY2FlMWMiLCJpYXQiOjE3NzcyMTU1NzAsIm5iZiI6MTc3NzIxNTU3MCwiZXhwIjoxODA4NzUxNTcwLCJzdWIiOiI1MjMzIiwic2NvcGVzIjpbXX0.tHJVqVgv4YmwrUr5HeLTlJ1qfXPpXmVGOonCIZMIXj00FDTHGQ6u8SjCKm30kBy3F6NfQjldOVh8Y2LcP8UhHqYM-jxwm35qctp_S7hiSLr9bnLJND-Fl2Q3brqGRgGsfLVRBTDYlG3i4KoGxXjnswik1j_HIS9J_efkqeBbRhbs9DLWMEEw29DA5EUJmuBYR8M1Cl9T7XMeOkBt_ZIpYHEc9sIMSZwB8MV0yf6eSeQRZv2une9oZ4Nf0yccjZdMYapLrN0Jy-54HFgF3HL24aWPddQQP4I8JX_Y8fB-adThH8PGov78dNPCHC3hPf7R0AAsVxUmqeDS3zCHdFXd4BywD0D6KgDyLyq0scB3YyZP1sGhINCU3tFvIeNmP42kkwT1R221h7y0nEaoSiBTMNqTeZHNw4Ty7GNzVrAyV68nyZ4nnnvkqhAqOhcDiyh42a2ro7-xqOZcIREPuaxtVL6Jfp3Kha8gsA7QWncp9ooBVamjc-0QEvw-CP0h4_8mm6wzg6NRgWjouWBwcNsw93Wf3eOJhynjuOLMttGvQbiH2WWDq9e5CLQuVb8qqLVcfN7R06UQh9Ynw9JdOVY4CjXFMXeRyqkLO99ThuyxBW5-eSYTkrmCnnw8tadJ9uiIvzcTZUwFlCocss7biergwjcPbRYBn7SMglcDZUVjAq8';
+const TMD_TOKEN = process.env.TMD_TOKEN || 'eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjM4YzBlYjVkNjFkZWQyOGY0ZDEzZjI0ZTQ3NDkyNTUwOTcyOWI4MzFjZDBhMWI4Mjg1MmM3NzI4NzU0ZThjMzlmZDI1MTY4ZDEwNmQ5YWJlIn0.eyJhdWQiOiIyIiwianRpIjoiMzhjMGViNWQ2MWRlZDI4ZjRkMTNmMjRlNDc0OTI1NTA5NzI5YjgzMWNkMGExYjgyODUyYzc3Mjg3NTRlOGMzOWZkMjUxNjhkMTA2ZDlhYmUiLCJpYXQiOjE3Nzk2OTg1NzgsIm5iZiI6MTc3OTY5ODU3OCwiZXhwIjoxODExMjM0NTc4LCJzdWIiOiI1MzYxIiwic2NvcGVzIjpbXX0.jOwBTgsaEfT1W8eHceqqhZC3RPSH22f-xLkwI92DNnvvhRn8-P_pFPZKqPVEUzmuPiE9v2dbbfZ0DbYQkL4SZUWbDslv5-k32gqvy49_nokvVzGXGXloC8vb1C3WBj-lDOYjDp8Xc6oDgmOg2j_qLUDvjSCjWY3THHYC2RgcjX5YA3rtjMJC427FG2AIuJzm7wlQfKJbBrmsK1g4-mneY0SvR3kHkOIhs4eBzNFw-euR_weEWTTaeyCabkGSzyKJ3hH0w4smgP1YUV6LCfr5YnAOnW_wPeOnjj1gwKeyOPe2omYqVIm5sTeI5_jlW6A3u2phk1Jk976DCNRx0YJF5C3hEqU6rsuRuar2_qkQ97jXirjmf_CxJOThh6tM9_XEskKyPbHZyky-JAZQceqCwnWbfNwAN30dCMiQE2Vmxot3mUifi8MOAZj9j87L0sjBTZGwOfyBmeFj3t0AcKZ0hWaC_tl-Ivw30QkK-cxGANUEBCxVAwMr0o6flKqTbFGs_9ElF06RXjSpaVEGox20cZxevtXdvdn1J_EF9msx7k9FJe-MNgMncxEzBKc1Vkeb4Ue1cVQzTjdczzUUM3HRKL1vHwMzHyN1wdZjG2A0zUVpCKHziUG2iu-QaSZp6Pfp-n_qBxqQtimmrtyR7hrXBgjaTjINy6OWzj9t490u0LA';
 
 // Supabase (CCTV detections from Jetson)
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -88,7 +88,7 @@ const fetchLiveWeather = async () => {
     const lat = 19.908, lon = 99.832;   // เมืองเชียงราย
     const date = new Date().toISOString().slice(0, 10);
     const hour = new Date().getHours();
-    const url = `https://data.tmd.go.th/nwpapi/v1/forecast/hourly/at?lat=${lat}&lon=${lon}&fields=tc,rh,rr,ws,wd,cond&date=${date}&hour=${hour}&duration=${FORECAST_DURATION}`;
+    const url = `https://data.tmd.go.th/nwpapi/v1/forecast/location/hourly/at?lat=${lat}&lon=${lon}&fields=tc,rh,rain,ws10m,wd10m,cond&date=${date}&hour=${hour}&duration=${FORECAST_DURATION}`;
     const resp = await fetch(url, {
       headers: { 'Authorization': `Bearer ${TMD_TOKEN}`, 'Accept': 'application/json' },
     });
@@ -103,8 +103,8 @@ const fetchLiveWeather = async () => {
 const weatherToString = (w) => {
   if (!w) return null;
   const dirs = ['เหนือ','ตะวันออกเฉียงเหนือ','ตะวันออก','ตะวันออกเฉียงใต้','ใต้','ตะวันตกเฉียงใต้','ตะวันตก','ตะวันตกเฉียงเหนือ'];
-  const dirName = dirs[Math.round((w.wd ?? 0) / 45) % 8] ?? 'ไม่ระบุ';
-  return `อุณหภูมิ: ${w.tc ?? '-'}°C, ฝนสะสม: ${w.rr ?? 0} mm/hr, ความชื้น: ${w.rh ?? '-'}%, ลม: ${w.ws ?? 0} m/s ทิศ${dirName}`;
+  const dirName = dirs[Math.round((w.wd10m ?? 0) / 45) % 8] ?? 'ไม่ระบุ';
+  return `อุณหภูมิ: ${w.tc ?? '-'}°C, ฝนสะสม: ${w.rain ?? 0} mm/hr, ความชื้น: ${w.rh ?? '-'}%, ลม: ${w.ws10m ?? 0} m/s ทิศ${dirName}`;
 };
 
 const fetchLiveTraffic = async () => {
@@ -203,7 +203,7 @@ const predictRouteRisk = (routeId, weather, waterLevels, damLevels, traffic) => 
     : 0.30;
 
   // DepthTrend (0.25): rainfall intensity as real-time flood-rise trend proxy
-  const f_depth_trend = Math.min((weather?.rr ?? 0) / RAIN_SATURATION_MM, 1);
+  const f_depth_trend = Math.min((weather?.rain ?? 0) / RAIN_SATURATION_MM, 1);
 
   // HistoricalIncident (0.20): static district flood-frequency
   const f_historical = CR_HISTORICAL_INCIDENTS[ROUTE_DISTRICT[routeId]] ?? 0.60;
@@ -455,7 +455,7 @@ app.get('/api/tmd/forecast', async (req, res) => {
     const { lat, lon, date, hour, duration } = req.query;
     if (!lat || !lon) return res.status(400).json({ error: 'Missing lat/lon' });
 
-    const url = `https://data.tmd.go.th/nwpapi/v1/forecast/hourly/at?lat=${lat}&lon=${lon}&fields=tc,rh,rr,ws,wd,cond&date=${date || new Date().toISOString().slice(0, 10)}&hour=${hour ?? new Date().getHours()}&duration=${duration || 6}`;
+    const url = `https://data.tmd.go.th/nwpapi/v1/forecast/location/hourly/at?lat=${lat}&lon=${lon}&fields=tc,rh,rain,ws10m,wd10m,cond&date=${date || new Date().toISOString().slice(0, 10)}&hour=${hour ?? new Date().getHours()}&duration=${duration || 6}`;
 
     const response = await fetch(url, {
       headers: { 'Authorization': `Bearer ${TMD_TOKEN}`, 'Accept': 'application/json' },
@@ -565,7 +565,7 @@ app.get('/api/ai/briefing', async (_req, res) => {
       if (traffic.C?.congestion_level === 'blocked' || traffic.B?.congestion_level === 'blocked') alert_level = 3;
       else if (traffic.B?.congestion_level === 'warning') alert_level = 2;
     }
-    if (weather?.rr != null && weather.rr > 15) alert_level = Math.max(alert_level, 2);
+    if (weather?.rain != null && weather.rr > 15) alert_level = Math.max(alert_level, 2);
 
     const completion = await typhoon.chat.completions.create({
       model: 'typhoon-v2.5-30b-a3b-instruct',
