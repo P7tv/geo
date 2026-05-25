@@ -170,6 +170,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     if (!mapInstance.current || !window.sphere) return;
     layersRef.current.riskCircles.forEach(c => mapInstance.current.Overlays.remove(c));
     layersRef.current.riskCircles = [];
+    if (!toggles.flood) return;
     gistdaRiskPoints.forEach(pt => {
       const circle = new window.sphere.Circle({ lon: pt.lon, lat: pt.lat }, 1200, {
         lineColor: 'rgba(59,130,246,0.35)', fillColor: 'rgba(59,130,246,0.06)',
@@ -177,15 +178,16 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       mapInstance.current.Overlays.add(circle);
       layersRef.current.riskCircles.push(circle);
     });
-  }, [gistdaRiskPoints]);
+  }, [gistdaRiskPoints, toggles.flood]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
     layersRef.current.stations.forEach(s => mapInstance.current.Overlays.remove(s));
     layersRef.current.stations = [];
+    if (!toggles.wind) return;
     WEATHER_STATIONS.forEach(st => {
       const d = stationData[st.id]; if (!d) return;
-      const rainValNum = parseFloat(d.rr);
+      const rainValNum = parseFloat(d.rain);
       const isRainValValid = !isNaN(rainValNum) && rainValNum > 0;
       const rainValStr = isRainValValid ? rainValNum.toFixed(1) : '0.0';
       const highRain = isRainValValid && rainValNum > 5;
@@ -219,7 +221,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       mapInstance.current.Overlays.add(marker);
       layersRef.current.stations.push(marker);
     });
-  }, [stationData]);
+  }, [stationData, toggles.wind]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -265,6 +267,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     if (!mapInstance.current || !window.sphere) return;
     layersRef.current.incidents.forEach(l => mapInstance.current.Overlays.remove(l));
     layersRef.current.incidents = [];
+    if (!toggles.history) return;
     incidents.forEach(inc => {
       const circle = new window.sphere.Circle({ lon: inc.lon, lat: inc.lat }, 1200, {
         lineColor: 'rgba(239,68,68,0.5)', fillColor: 'rgba(239,68,68,0.1)',
@@ -276,7 +279,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       });
       mapInstance.current.Overlays.add(marker); layersRef.current.incidents.push(marker);
     });
-  }, [incidents]);
+  }, [incidents, toggles.history]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -314,9 +317,9 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     if (toggles.cloud) {
       WEATHER_STATIONS.forEach(st => {
         const d = stationData[st.id];
-        if (d && d.rr > 0) {
+        if (d && d.rain > 0) {
           // Draw a gorgeous rain cloud coverage diamond polygon over the rainy area
-          const radiusScale = Math.max(0.02, d.rr * 0.007); // dynamic cloud size
+          const radiusScale = Math.max(0.02, d.rain * 0.007); // dynamic cloud size
           const pts = [
             { lon: st.lon, lat: st.lat + radiusScale },
             { lon: st.lon + radiusScale * 1.2, lat: st.lat },
@@ -325,14 +328,14 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
             { lon: st.lon, lat: st.lat + radiusScale } // close
           ];
 
-          const fillColor = d.rr > 10
+          const fillColor = d.rain > 10
             ? 'rgba(239, 68, 68, 0.08)' // heavy: red cloud cell
-            : d.rr > 4
+            : d.rain > 4
               ? 'rgba(245, 158, 11, 0.07)'  // moderate: amber cloud cell
               : 'rgba(59, 130, 246, 0.05)'; // light: blue cloud cell
-          const lineColor = d.rr > 10
+          const lineColor = d.rain > 10
             ? 'rgba(239, 68, 68, 0.35)'
-            : d.rr > 4
+            : d.rain > 4
               ? 'rgba(245, 158, 11, 0.3)'
               : 'rgba(59, 130, 246, 0.25)';
 
@@ -365,16 +368,16 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     <div style={{ height: '100%', width: '100%', position: 'relative' }}>
       <div ref={mapRef} style={{ height: '100%', width: '100%' }} />
       {loading && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(4,7,15,0.85)', zIndex: 1000, fontFamily: 'sans-serif' }}>
-          <div className="sync-dot" style={{ width: 12, height: 12, marginBottom: 12 }} />
-          <span style={{ fontSize: 13, color: '#f0f6fc', letterSpacing: '0.5px' }}>กำลังเชื่อมต่อ GISTDA Sphere Map...</span>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(248,250,252,0.88)', zIndex: 1000, fontFamily: 'sans-serif', backdropFilter: 'blur(2px)' }}>
+          <div className="sync-dot" style={{ marginBottom: 12 }} />
+          <span style={{ fontSize: 13, color: '#475569', letterSpacing: '0.5px', fontFamily: 'var(--font-th)' }}>กำลังเชื่อมต่อ GISTDA Sphere Map...</span>
         </div>
       )}
       {mapError && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(4,7,15,0.92)', zIndex: 1000, fontFamily: 'sans-serif', padding: 20, textAlign: 'center', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 12 }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(248,250,252,0.95)', zIndex: 1000, fontFamily: 'sans-serif', padding: 20, textAlign: 'center' }}>
           <span style={{ fontSize: 32, marginBottom: 12 }}>⚠️</span>
-          <strong style={{ fontSize: 15, color: '#ff3b30', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>การเชื่อมต่อแผนที่ขัดข้อง (Map Error)</strong>
-          <p style={{ fontSize: 11, color: '#8b949e', maxWidth: 280, lineHeight: 1.6 }}>ไม่สามารถโหลด SDK ได้ คีย์แผนที่ในระบบอาจผิดพลาดหรือขาดอายุการใช้งาน กรุณาเช็คตัวแปร VITE_GISTDA_MAP_KEY ใน .env</p>
+          <strong style={{ fontSize: 14, color: 'var(--danger)', marginBottom: 8 }}>การเชื่อมต่อแผนที่ขัดข้อง</strong>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 280, lineHeight: 1.6 }}>ไม่สามารถโหลด GISTDA SDK กรุณาเช็ค VITE_GISTDA_MAP_KEY ใน .env</p>
         </div>
       )}
     </div>
@@ -389,7 +392,7 @@ export default function App() {
   const [stationData, setStationData] = useState({});
   const [routePaths, setRoutePaths] = useState({});
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
-  const [toggles, setToggles] = useState({ flood: true, wind: true, history: false, cloud: true, satellite: true, sarMask: true, vehicles: true });
+  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, cloud: true, satellite: true, sarMask: true, vehicles: true });
 
   const [incidents, setIncidents] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -418,8 +421,8 @@ export default function App() {
   const [optimizerProgress, setOptimizerProgress] = useState(0);
   const [resources, setResources] = useState({ boats: '—', teams: '—', waiting: '—' });
 
-  const [terminalLogs, setTerminalLogs] = useState([]);
-  const [cctvExpanded, setCctvExpanded] = useState(true);
+  const [, setTerminalLogs] = useState([]);
+
 
   const addToast = (text, type = 'info') => {
     const id = Math.random();
@@ -597,7 +600,7 @@ export default function App() {
           gistdaRiskPoints.forEach(pt => { const d = getDist(p, pt); if (d < 1200) score += (1 - d/1200) * pt.severity; });
           incidents.forEach(inc => { const d = getDist(p, inc); if (d < 1200) score += (1 - d/1200) * inc.severity * 2.5; });
         });
-        const rain = Math.max(1, (cityCur.rr || 0) / 4);
+        const rain = Math.max(1, (cityCur.rain || 0) / 4);
         risk  = Math.min(Math.round((score / points.length) * 1000 * rain), 99);
         depth = Math.max(0.1, risk / 65).toFixed(1);
       }
@@ -741,7 +744,7 @@ export default function App() {
 
   const maxRainStation = WEATHER_STATIONS.reduce(
     (best, st) => {
-      const val = stationData[st.id]?.rr || 0;
+      const val = stationData[st.id]?.rain || 0;
       return val > best.val ? { name: st.name, val } : best;
     },
     { name: null, val: -1 }
@@ -765,147 +768,201 @@ export default function App() {
   return (
     <div id="app-container">
 
-      {/* Toast notifications */}
+      {/* Toasts */}
       <div className="toast-container">
         {toasts.map(t => (
-          <div key={t.id} className={`toast ${t.type === 'success' ? 'success' : t.type === 'warn' ? 'warn' : ''}`}>
+          <div key={t.id} className={`toast-v2 ${t.type === 'success' ? 'success' : t.type === 'warn' ? 'warn' : ''}`}>
             <span>{t.type === 'success' ? '✓' : t.type === 'warn' ? '⚠' : '●'}</span>
             <span>{t.text}</span>
           </div>
         ))}
       </div>
 
-      {/* ── Double Header ── */}
-      <header className="gov-double-header no-print">
-        <div className="gov-header-row-1">
-          <div className="gov-platform-title">
-            <span className="gov-seal-icon">🛡️</span>
-            <div className="header-title">
-              <h1 style={{ fontSize: '15px', fontWeight: '800', letterSpacing: '0.5px' }}>ศูนย์บัญชาการสถานการณ์ภัยพิบัติแห่งชาติ (GISTDA National Disaster Command Center)</h1>
-              <span style={{ fontSize: '9px', color: 'var(--text-3)' }}>CO-OPERATIONAL PORTAL · GISTDA · TMD · DDPM</span>
-            </div>
-          </div>
-
-          <div className="header-center">
-            <div className="status-chip province">
-              <span className="status-dot live" />
-              เชียงราย
-            </div>
-            <div className={`status-chip ${alertLevelClass}`}>
-              <span className="status-dot live" />
-              ระดับแจ้งเตือน {alertLevel}
-            </div>
-          </div>
-
-          <div className="header-right">
-            <div className="weather-strip">
-              <div className="weather-strip-item">
-                <label>อุณหภูมิ</label>
-                <strong>{cityCur.tc != null ? `${cityCur.tc.toFixed(1)}°C` : '—'}</strong>
-              </div>
-              <div className="weather-strip-item">
-                <label>ฝน</label>
-                <strong>{cityCur.rr != null ? `${cityCur.rr.toFixed(1)} mm` : '—'}</strong>
-              </div>
-              <div className="weather-strip-item">
-                <label>ลม</label>
-                <strong>{cityCur.ws != null ? `${cityCur.ws.toFixed(1)} m/s` : '—'}</strong>
-              </div>
-            </div>
-            <div className="header-clock">{clock}</div>
+      {/* ── Compact Header ── */}
+      <header className="app-header no-print">
+        <div className="header-brand">
+          <span className="header-brand-icon">🛡️</span>
+          <div className="header-brand-text">
+            <h1>FloodNav · เชียงราย</h1>
+            <span>GISTDA · TMD · DDPM</span>
           </div>
         </div>
+        <div className="header-div" />
 
-        <div className="gov-header-row-2">
-          <nav className="gov-nav-tabs">
-            <button className={`gov-tab-btn ${activeTab === 'cockpit' ? 'active' : ''}`} onClick={() => setActiveTab('cockpit')}>
-              📡 ศูนย์บัญชาการหลัก (Tactical Cockpit)
-            </button>
-            <button className={`gov-tab-btn ${activeTab === 'geospatial' ? 'active' : ''}`} onClick={() => setActiveTab('geospatial')}>
-              🛰️ วิเคราะห์สารสนเทศภูมิศาสตร์ (Geospatial Analysis)
-            </button>
-            <button className={`gov-tab-btn ${activeTab === 'resources' ? 'active' : ''}`} onClick={() => setActiveTab('resources')}>
-              👥 การจัดสรรกำลังพลและกู้ชีพ (Logistics Planner)
-            </button>
-            <button className={`gov-tab-btn ${activeTab === 'executive' ? 'active' : ''}`} onClick={() => setActiveTab('executive')}>
-              📊 สรุปสถานการณ์ระดับผู้บริหาร (Executive Report)
-            </button>
-          </nav>
+        <div className="header-weather">
+          <div className="weather-pill">
+            <span className="wlabel">°C</span>
+            <strong>{cityCur.tc != null ? `${cityCur.tc.toFixed(1)}°` : '—'}</strong>
+          </div>
+          <div className="weather-pill">
+            <span className="wlabel">ฝน</span>
+            <strong>{cityCur.rain != null ? `${cityCur.rain.toFixed(1)} mm` : '—'}</strong>
+          </div>
+          <div className="weather-pill">
+            <span className="wlabel">ลม</span>
+            <strong>{cityCur.ws10m != null ? `${cityCur.ws10m.toFixed(1)} m/s` : '—'}</strong>
+          </div>
+          {hasTmdWarning && (
+            <div className="weather-pill" style={{ borderColor: 'var(--danger)', background: 'var(--danger-dim)' }}>
+              <span style={{ color: 'var(--danger)', fontSize: 10, fontWeight: 700 }}>⚠ TMD</span>
+            </div>
+          )}
+        </div>
+
+        <div className="header-right">
+          <div className={`alert-chip level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1}`}>
+            <span className="status-dot live" />
+            เฝ้าระวัง {alertLevel}
+          </div>
+          <div className="header-clock">{clock}</div>
+          <div className="header-nav-btns">
+            <button className={`header-nav-btn ${activeTab === 'cockpit' ? 'active' : ''}`} onClick={() => setActiveTab('cockpit')}>แผนที่</button>
+            <button className={`header-nav-btn ${activeTab === 'geospatial' ? 'active' : ''}`} onClick={() => setActiveTab('geospatial')}>GIS</button>
+            <button className={`header-nav-btn ${activeTab === 'resources' ? 'active' : ''}`} onClick={() => setActiveTab('resources')}>ทรัพยากร</button>
+            <button className={`header-nav-btn ${activeTab === 'executive' ? 'active' : ''}`} onClick={() => setActiveTab('executive')}>รายงาน</button>
+          </div>
         </div>
       </header>
 
-      {/* ── Alert Banner — TMD warning overrides AI briefing ── */}
-      <div className={`alert-banner level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1}${hasTmdWarning ? ' tmd-warning' : ''}`}>
-        <span className="alert-banner-icon">
-          {alertLevel >= 3 ? '🔴' : alertLevel === 2 ? '🟡' : '🔵'}
-        </span>
-        <span className="alert-banner-text">
+      {/* ── Alert bar ── */}
+      <div className={`alert-bar level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1} no-print`}>
+        <span>{alertLevel >= 3 ? '🔴' : alertLevel === 2 ? '🟡' : '🔵'}</span>
+        <span className="alert-bar-txt">
           {hasTmdWarning
-            ? `[TMD แจ้งเตือนทางการ] ${tmdAlertText}`
+            ? `[TMD แจ้งเตือน] ${tmdAlertText}`
             : briefingLoading
               ? 'กำลังประมวลผลสถานการณ์...'
-              : (briefing.text || 'ระบบพร้อมปฏิบัติการ — กำลังประเมินสถานการณ์น้ำท่วมพื้นที่เชียงราย (เมือง, แม่สาย, เทิง, เวียงป่าเป้า)')}
+              : (briefing.text || 'ระบบพร้อมปฏิบัติการ — เชียงราย (เมือง · แม่สาย · เทิง · เวียงป่าเป้า)')}
         </span>
         {briefing.timestamp && !hasTmdWarning && (
-          <span className="alert-banner-meta">{briefing.timestamp}</span>
+          <span className="alert-bar-meta">{briefing.timestamp}</span>
         )}
-        <button className="alert-banner-refresh" onClick={fetchBriefing} disabled={briefingLoading}>
+        <button className="alert-bar-refresh" onClick={fetchBriefing} disabled={briefingLoading}>
           {briefingLoading ? '...' : 'รีเฟรช'}
         </button>
       </div>
 
-      {/* ── Main Layout ── */}
+      {/* ── 3-Column Cockpit ── */}
       {activeTab === 'cockpit' && (
-        <div className="main-layout">
+        <div className="main-3col">
 
-        {/* ── Map Section ── */}
-        <section className="map-section">
+          {/* LEFT: Route cards + toggles + log */}
+          <aside className="left-panel">
+            <div className="left-panel-scroll">
 
-          {/* Top-left map badge */}
-          <div className="map-badge map-badge-tl">
-            <span className="status-dot live" style={{ background: 'var(--safe)' }} />
-            GISTDA sphere · SAR · {new Date().toLocaleDateString('th-TH')}
-          </div>
+              {/* Route cards */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Routes</span>
+                  <button
+                    onClick={fetchRouteExplanation}
+                    style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--blue-primary)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
+                  >🔍 XAI</button>
+                </div>
+                {allRoutesData.map(route => {
+                  const riskPct = route.risk ?? 0;
+                  const riskColor = riskPct >= 70 ? 'var(--danger)' : riskPct >= 40 ? 'var(--warn)' : 'var(--safe)';
+                  const statusCls = route.id === 'A' ? 'safe' : route.id === 'B' ? 'warn' : 'danger';
+                  const vd = vehicleData[route.id];
+                  return (
+                    <div
+                      key={route.id}
+                      className={`route-card-v2 ${activeRoute === route.id ? 'active' : ''}`}
+                      onClick={() => { setActiveRoute(route.id); addLog(route.name); }}
+                    >
+                      <div className="rc-top">
+                        <div className="rc-letter" style={{ background: route.color }}>{route.id}</div>
+                        <div className="rc-info">
+                          <div className="rc-name">{route.name}</div>
+                          <div className="rc-dest">{route.desc ?? ''}</div>
+                        </div>
+                        <div className="rc-risk" style={{ color: riskColor }}>{riskPct}%</div>
+                      </div>
+                      <div className="rc-bar-track">
+                        <div className="rc-bar-fill" style={{ width: `${riskPct}%`, background: riskColor }} />
+                      </div>
+                      <div className="rc-meta">
+                        <span className={`rc-status-tag ${statusCls}`}>{route.status}</span>
+                        <span><strong>{route.duration ?? '--'}</strong> น.</span>
+                        <span><strong>{route.distance ?? '--'}</strong> กม.</span>
+                        {vd && <span>🚗 <strong>{vd.vehicle_count ?? 0}</strong></span>}
+                      </div>
+                      {activeRoute === route.id && (
+                        <div className="rc-actions" onClick={e => e.stopPropagation()}>
+                          <button className="rc-btn xai" onClick={fetchRouteExplanation}>🔍 XAI</button>
+                          <button
+                            className="rc-btn override"
+                            onClick={() => {
+                              const reason = window.prompt('เหตุผล Override:');
+                              if (!reason) return;
+                              const officer = window.prompt('ชื่อเจ้าหน้าที่:') || 'ผบ.เหตุการณ์';
+                              addLog(`Override: ${route.id}`, true, reason, officer);
+                              addToast(`บันทึก Override เส้นทาง ${route.id}`, 'success');
+                            }}
+                          >✋ Override</button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
 
-          {/* CCTV Drawer */}
-          <div className={`cctv-drawer ${cctvExpanded ? '' : 'collapsed'}`}>
-            <div className="cctv-drawer-header">
-              <span>กล้อง CCTV</span>
-              <button
-                onClick={() => setCctvExpanded(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 11, lineHeight: 1 }}
-              >✕</button>
-            </div>
-            <div className="cctv-feed">
-              <span className="cctv-feed-id">CAM-01</span>
-              <span className="cctv-feed-name">ทล.1 สายเหนือ</span>
-              <span className="cctv-feed-count">{vehicleData.A?.vehicle_count ?? 0} คัน</span>
-            </div>
-            <div className="cctv-feed">
-              <span className="cctv-feed-id">CAM-02</span>
-              <span className="cctv-feed-name">ทล.1 สายใต้</span>
-              <span className="cctv-feed-count">{vehicleData.A?.vehicle_count ?? 0} คัน</span>
-            </div>
-            <div className="cctv-feed">
-              <span className="cctv-feed-id">CAM-03</span>
-              <span className="cctv-feed-name">ทล.118 ดอยสะเก็ด</span>
-              <span className="cctv-feed-count">{vehicleData.B?.vehicle_count ?? 0} คัน</span>
-            </div>
-            <div className="cctv-feed">
-              <span className="cctv-feed-id">CAM-04</span>
-              <span className="cctv-feed-name">สันทราย สายรอง</span>
-              <span className="cctv-feed-count">{vehicleData.C?.vehicle_count ?? 0} คัน</span>
-            </div>
-          </div>
+              {/* Layer toggles */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Map Layers</span>
+                </div>
+                <div className="toggle-grid-v2">
+                  {Object.entries(toggles).map(([k, v]) => (
+                    <div key={k} className="toggle-item-v2">
+                      <span>{TOGGLE_LABELS[k] || k}</span>
+                      <div className={`toggle-sw ${v ? 'on' : ''}`} onClick={() => setToggles(p => ({ ...p, [k]: !p[k] }))} />
+                    </div>
+                  ))}
+                </div>
+              </div>
 
-          {!cctvExpanded && (
-            <button className="cctv-toggle-btn" onClick={() => setCctvExpanded(true)}>
-              ▶ CCTV
-            </button>
-          )}
+              {/* Decision log */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Decision Log</span>
+                  <button
+                    style={{ background: 'var(--danger-dim)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
+                    onClick={() => {
+                      const reason = window.prompt('เหตุผลการตัดสินใจ Override:');
+                      if (!reason) return;
+                      const officer = window.prompt('ชื่อเจ้าหน้าที่:') || 'ผบ.เหตุการณ์';
+                      addLog(`Override: ${activeRoute}`, true, reason, officer);
+                      addToast(`บันทึก Override เส้นทาง ${activeRoute}`, 'success');
+                    }}
+                  >✋</button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+                  {decisionLogs.length === 0 ? (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 0' }}>ยังไม่มีบันทึก</div>
+                  ) : decisionLogs.map((log, idx) => (
+                    <div key={idx} className={`log-item${log.warn ? ' warn-log' : ''}`}>
+                      <div className="log-item-top">
+                        <span className={`log-route${log.warn ? ' warn' : ''}`}>{log.route}</span>
+                        <span className="log-time">{log.time}</span>
+                      </div>
+                      <div className="log-reason">{log.reason}</div>
+                      <div className="log-officer">ผู้บันทึก: {log.officer}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
 
-          {/* Map */}
-          <div className="map-inner">
+            </div>
+          </aside>
+
+          {/* CENTER: Map */}
+          <div className="map-center">
+            <div className="map-badge-v2">
+              <span className="status-dot live" />
+              GISTDA Sphere · {new Date().toLocaleDateString('th-TH')}
+            </div>
+
             <SphereMap
               activeRoute={activeRoute}
               routePaths={routePaths}
@@ -916,389 +973,183 @@ export default function App() {
               gistdaRiskPoints={gistdaRiskPoints}
               shelters={shelters}
             />
-          </div>
 
-          {/* Active route float card */}
-          <div className="route-float">
-            <div className="route-float-title">เส้นทางที่เลือก</div>
-            <div className="route-float-name">{activeData.name}</div>
-            <div className="route-float-score">
-              <span className="risk-badge" style={{ color: activeData.color }}>
+            <div className="map-active-route">
+              <div>
+                <div className="mar-label">เส้นทางที่เลือก</div>
+                <div className="mar-name">{activeData.name}</div>
+              </div>
+              <div className="mar-risk" style={{ color: activeData.color }}>
                 {activeData.risk ?? '--'}%
-              </span>
-              <div className="route-stats">
-                <div className="route-stat-row">
-                  <span>เวลา</span><strong>{activeData.duration ?? '--'} น.</strong>
-                </div>
-                <div className="route-stat-row">
-                  <span>ระยะ</span><strong>{activeData.distance ?? '--'} กม.</strong>
-                </div>
-                <div className="route-stat-row">
-                  <span>น้ำลึก</span>
-                  <strong style={{ color: activeData.depth > 0.8 ? 'var(--danger)' : 'var(--text-1)' }}>
-                    {activeData.depth ?? '--'} ม.
-                  </strong>
-                </div>
+              </div>
+              <div className="mar-stats">
+                <span>{activeData.duration ?? '--'} น.</span>
+                <span>{activeData.distance ?? '--'} กม.</span>
+                <span style={{ color: (activeData.depth ?? 0) > 0.8 ? 'var(--danger)' : 'var(--text-2)' }}>
+                  น้ำ {activeData.depth ?? '--'} ม.
+                </span>
               </div>
             </div>
           </div>
-        </section>
 
-        {/* ── Sidebar ── */}
-        <aside className="sidebar">
-          <div className="sidebar-scroll">
+          {/* RIGHT: Data + AI chat */}
+          <aside className="right-panel">
+            <div className="right-panel-scroll">
 
-            {/* Resources */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ทรัพยากรภาคสนาม</span>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
-                {[
-                  { label: 'เรือกู้ภัย',    value: resources.boats,   color: 'var(--safe)'         },
-                  { label: 'ทีมกู้ชีพ',     value: resources.teams,   color: 'var(--blue-primary)' },
-                  { label: 'รอช่วยเหลือ',   value: `${resources.waiting} คน`, color: 'var(--danger)' },
-                ].map(item => (
-                  <div key={item.label} style={{ background: 'var(--bg-panel)', borderRadius: 'var(--radius)', padding: '10px 8px', textAlign: 'center', border: '1px solid var(--border)' }}>
-                    <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 4 }}>{item.label}</div>
-                    <strong style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: item.color }}>{item.value}</strong>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Routes */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">เส้นทางแนะนำ</span>
-                <button
-                  onClick={fetchRouteExplanation}
-                  style={{ background: 'var(--blue-dim)', border: '1px solid var(--border-strong)', color: '#60a5fa', borderRadius: 'var(--radius)', padding: '2px 8px', fontSize: 9, fontFamily: 'var(--font-en)', cursor: 'pointer' }}
-                >
-                  🔍 XAI อธิบาย
-                </button>
-              </div>
-              {allRoutesData.map((route, i) => {
-                const tagClass = route.id === 'A' ? 'tag-safe' : route.id === 'B' ? 'tag-warn' : 'tag-danger';
-                return (
-                  <div
-                    key={route.id}
-                    className={`route-card ${activeRoute === route.id ? 'active' : ''}`}
-                    onClick={() => { setActiveRoute(route.id); addLog(route.name); }}
-                  >
-                    <div className="route-card-top">
-                      <div className="route-card-name">
-                        <span className="route-dot" style={{ background: route.color }} />
-                        {route.name}
-                      </div>
-                      <span className={`route-status-tag ${tagClass}`}>{route.status}</span>
-                    </div>
-                    <div className="route-card-metrics">
-                      <span>#{i+1}</span>
-                      <span>{route.duration ?? '--'} น.</span>
-                      <span>{route.distance ?? '--'} กม.</span>
-                      <span>{route.depth ?? '--'} ม.</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Weather table */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">สภาพอากาศ</span>
-                <span className="sb-section-badge">TMD Live</span>
-              </div>
-              <table className="weather-table">
-                <thead>
-                  <tr>
-                    <th>สถานี</th><th>°C</th><th>ฝน (mm)</th><th>ลม</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {WEATHER_STATIONS.map(st => {
-                    const d = stationData[st.id];
-                    const rainNum = d?.rr != null && !isNaN(d.rr) ? Number(d.rr) : null;
-                    const fillPct = rainNum != null ? Math.min(rainNum / 20 * 100, 100) : 0;
-                    return (
-                      <tr key={st.id}>
-                        <td>{st.name}</td>
-                        <td>{d?.tc?.toFixed(1) ?? '—'}</td>
-                        <td>
-                          <div className="rain-indicator">
-                            <div className="rain-bar">
-                              <div className="rain-fill" style={{ width: `${fillPct}%` }} />
-                            </div>
-                            {rainNum != null ? rainNum.toFixed(1) : '—'}
-                          </div>
-                        </td>
-                        <td>{d?.ws?.toFixed(1) ?? '—'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* River water levels */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ระดับน้ำแม่น้ำ</span>
-                <span className="sb-section-badge">กรมทรัพยากรน้ำ</span>
-              </div>
-              {waterLevels
-                ? waterLevels.map(st => {
-                    const hasData = st.level != null;
-                    const pctOfWarn = (hasData && st.warning_level) ? st.level / st.warning_level : null;
-                    const valClass = !hasData ? 'nodata' : pctOfWarn == null ? 'safe' : pctOfWarn >= 1 ? 'danger' : pctOfWarn >= 0.8 ? 'warn' : 'safe';
-                    return (
-                      <div key={st.id} className="water-row">
-                        <div className="water-row-name">
-                          <div style={{ fontWeight: 600, color: 'var(--text-1)' }}>{st.id}</div>
-                          <div>{st.name}</div>
-                        </div>
-                        <span className={`water-level-val ${valClass}`}>
-                          {hasData ? `${st.level.toFixed(2)} ม.` : '—'}
-                        </span>
-                      </div>
-                    );
-                  })
-                : <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '6px 0' }}>กำลังดึงข้อมูล...</div>
-              }
-            </div>
-
-            {/* Dam levels */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ระดับน้ำเขื่อน</span>
-                <span className="sb-section-badge">กรมชลประทาน</span>
-              </div>
-              {damLevels
-                ? damLevels.map(dam => {
-                    const pct = dam.percent;
-                    const fillClass = pct == null ? '' : pct >= 100 ? 'danger' : pct >= 80 ? 'warn' : 'safe';
-                    const pctColor = pct == null ? 'var(--text-3)' : pct >= 100 ? 'var(--danger)' : pct >= 80 ? 'var(--warn)' : 'var(--safe)';
-                    return (
-                      <div key={dam.code} className="dam-row">
-                        <div className="dam-row-header">
-                          <span className="dam-name">{dam.name}</span>
-                          <span className="dam-pct" style={{ color: pctColor }}>
-                            {pct != null ? `${pct}%` : '—'}
-                          </span>
-                        </div>
-                        <div className="dam-track">
-                          <div className={`dam-fill ${fillClass}`} style={{ width: `${Math.min(pct ?? 0, 100)}%` }} />
-                        </div>
-                        <div className="dam-meta">
-                          <span>ความจุ {dam.capacity_mcm} ล้านลบ.ม.</span>
-                          {dam.inflow != null && <span>ไหลเข้า {dam.inflow} ม³/วิ</span>}
-                        </div>
-                      </div>
-                    );
-                  })
-                : <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '6px 0' }}>กำลังดึงข้อมูล...</div>
-              }
-            </div>
-
-            {/* Traffic / CCTV */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ปริมาณจราจร CCTV</span>
-              </div>
-              {allRoutesData.map(route => {
-                const vd  = vehicleData[route.id];
-                const pct = Math.min((vd?.vehicle_count ?? 0) / 30 * 100, 100);
-                const { tag: cTag, label: cLabel } = CONGESTION_CONFIG[vd?.congestion_level] ?? CONGESTION_CONFIG.normal;
-                return (
-                  <div key={route.id} className="traffic-row">
-                    <span className="traffic-route-label">{route.id}</span>
-                    <div className="traffic-bar-track">
-                      <div className="traffic-bar-fill" style={{ width: `${pct}%`, background: route.color }} />
-                    </div>
-                    <span className="traffic-count">{vd?.vehicle_count ?? 0}</span>
-                    <span className={`congestion-tag ${cTag}`}>{cLabel}</span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Route comparison bars */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">เปรียบเทียบเส้นทาง</span>
-              </div>
-              {[
-                { label: 'เวลาเดินทาง (นาที)', vals: allRoutesData.map(r => r.duration ?? 0), max: 60 },
-                { label: 'ความเสี่ยง (%)',     vals: allRoutesData.map(r => r.risk     ?? 0), max: 100 },
-              ].map(({ label, vals, max }) => (
-                <div key={label} className="comp-row">
-                  <div className="comp-label">
-                    <span>{label}</span>
-                    <span>{vals.map(v => v).join(' · ')}</span>
-                  </div>
-                  <div className="comp-track">
-                    {allRoutesData.map((r, i) => (
-                      <div key={r.id} className="comp-bar" style={{ width: `${(vals[i] / max) * 100}%`, background: r.color }} />
-                    ))}
-                  </div>
+              {/* Resources */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Resources</span>
+                  <button
+                    style={{ background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
+                    onClick={runResourceOptimizer}
+                    disabled={optimizerRunning}
+                  >{optimizerRunning ? `⚙ ${optimizerProgress}%` : '⚙ Optimize'}</button>
                 </div>
-              ))}
-            </div>
-
-            {/* Resource optimizer */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">จัดสรรทรัพยากรกู้ภัย</span>
-                {optimizerRunning && <span className="sb-section-badge">{optimizerProgress}%</span>}
+                <div className="resources-grid">
+                  {[
+                    { label: 'เรือกู้ภัย',   value: resources.boats,   color: 'var(--safe)' },
+                    { label: 'ทีมกู้ชีพ',    value: resources.teams,   color: 'var(--blue-primary)' },
+                    { label: 'รอช่วยเหลือ',  value: resources.waiting, color: 'var(--danger)' },
+                  ].map(item => (
+                    <div key={item.label} className="resource-item">
+                      <label>{item.label}</label>
+                      <strong style={{ color: item.color }}>{item.value}</strong>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, marginBottom: 10 }}>
-                {allRoutesData.map((route, idx) => {
-                  const isActive = optimizerRunning && (
-                    (idx === 0 && optimizerProgress > 20 && optimizerProgress < 60) ||
-                    (idx === 1 && optimizerProgress > 40 && optimizerProgress < 80) ||
-                    (idx === 2 && optimizerProgress > 60)
-                  );
-                  const tagClass = route.id === 'A' ? 'tag-safe' : route.id === 'B' ? 'tag-warn' : 'tag-danger';
-                  const lbl = optimizerRunning
-                    ? ['จำลอง','วิเคราะห์','ประมวลผล'][idx]
-                    : route.id === 'C' ? 'เฝ้าระวัง' : 'ปกติ';
+
+              {/* River levels */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">River Levels</span>
+                  <span className="section-badge">กรมทรัพยากรน้ำ</span>
+                </div>
+                {waterLevels
+                  ? waterLevels.map(st => {
+                      const hasData = st.level != null;
+                      const pctOfWarn = (hasData && st.warning_level) ? st.level / st.warning_level : null;
+                      const cls = !hasData ? 'nodata' : pctOfWarn == null ? 'safe' : pctOfWarn >= 1 ? 'danger' : pctOfWarn >= 0.8 ? 'warn' : 'safe';
+                      const pct = pctOfWarn != null ? Math.min(pctOfWarn * 100, 100) : 0;
+                      return (
+                        <div key={st.id} className="water-station">
+                          <div className="water-station-header">
+                            <span className="water-station-name">{st.name}</span>
+                            <span className={`water-station-val ${cls}`}>
+                              {hasData ? `${st.level.toFixed(2)} ม.` : '—'}
+                            </span>
+                          </div>
+                          <div className="water-bar-track">
+                            <div className={`water-bar-fill ${cls}`} style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="water-station-sub">
+                            {pctOfWarn != null ? `${(pctOfWarn * 100).toFixed(0)}% ของระดับเฝ้าระวัง` : 'ไม่มีข้อมูล'}
+                          </div>
+                        </div>
+                      );
+                    })
+                  : <div style={{ fontSize: 11, color: 'var(--text-3)' }}>กำลังดึงข้อมูล...</div>
+                }
+              </div>
+
+              {/* Dam levels */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Dams</span>
+                  <span className="section-badge">กรมชลประทาน</span>
+                </div>
+                {damLevels
+                  ? damLevels.map(dam => {
+                      const pct = dam.percent;
+                      const cls = pct == null ? '' : pct >= 100 ? 'danger' : pct >= 80 ? 'warn' : 'safe';
+                      const pctColor = pct == null ? 'var(--text-3)' : pct >= 100 ? 'var(--danger)' : pct >= 80 ? 'var(--warn)' : 'var(--safe)';
+                      return (
+                        <div key={dam.code} className="dam-card-v2">
+                          <div className="dam-card-header">
+                            <span className="dam-card-name">{dam.name}</span>
+                            <span className="dam-card-pct" style={{ color: pctColor }}>{pct != null ? `${pct}%` : '—'}</span>
+                          </div>
+                          <div className="dam-bar-track">
+                            <div className={`dam-bar-fill ${cls}`} style={{ width: `${Math.min(pct ?? 0, 100)}%` }} />
+                          </div>
+                          <div className="dam-card-meta">
+                            {dam.capacity_mcm} ล้านลบ.ม.{dam.inflow != null && ` · ไหลเข้า ${dam.inflow} ม³/วิ`}
+                          </div>
+                        </div>
+                      );
+                    })
+                  : <div style={{ fontSize: 11, color: 'var(--text-3)' }}>กำลังดึงข้อมูล...</div>
+                }
+              </div>
+
+              {/* CCTV Traffic */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">CCTV Traffic</span>
+                </div>
+                {allRoutesData.map(route => {
+                  const vd = vehicleData[route.id];
+                  const pct = Math.min((vd?.vehicle_count ?? 0) / 30 * 100, 100);
+                  const { tag: cTag, label: cLabel } = CONGESTION_CONFIG[vd?.congestion_level] ?? CONGESTION_CONFIG.normal;
                   return (
-                    <div key={route.id} style={{ background: isActive ? 'var(--blue-dim)' : 'var(--bg-panel)', border: `1px solid ${isActive ? 'var(--blue-primary)' : 'var(--border)'}`, borderRadius: 'var(--radius)', padding: '8px 6px', textAlign: 'center' }}>
-                      <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 4 }}>พื้นที่ {route.id}</div>
-                      <span className={`route-status-tag ${tagClass}`}>{lbl}</span>
+                    <div key={route.id} className="traffic-mini">
+                      <div className="traffic-mini-label" style={{ background: route.color }}>{route.id}</div>
+                      <div className="traffic-mini-bar">
+                        <div className="traffic-mini-fill" style={{ width: `${pct}%`, background: route.color }} />
+                      </div>
+                      <span className="traffic-mini-count">{vd?.vehicle_count ?? 0}</span>
+                      <span className={`route-status-tag ${cTag}`}>{cLabel}</span>
                     </div>
                   );
                 })}
               </div>
-              {optimizerRunning && (
-                <div style={{ height: 4, background: 'var(--bg-panel-alt)', borderRadius: 2, overflow: 'hidden', marginBottom: 8 }}>
-                  <div style={{ height: '100%', width: `${optimizerProgress}%`, background: 'var(--blue-primary)', transition: 'width 0.1s', borderRadius: 2 }} />
+
+              {/* AI Chat */}
+              <div className="chat-panel panel-section">
+                <div className="section-header" style={{ paddingBottom: 5 }}>
+                  <span className="section-title">Typhoon AI</span>
+                  <span className="section-badge">ผู้ช่วยปฏิบัติการ</span>
                 </div>
-              )}
-              <button
-                style={{ width: '100%', background: optimizerRunning ? 'var(--bg-panel-alt)' : 'var(--blue-dim)', border: '1px solid var(--border-strong)', color: optimizerRunning ? 'var(--text-3)' : '#60a5fa', borderRadius: 'var(--radius)', padding: '7px', fontSize: 11, fontFamily: 'var(--font-th)', fontWeight: 600, cursor: optimizerRunning ? 'not-allowed' : 'pointer', transition: 'all 0.15s' }}
-                onClick={runResourceOptimizer}
-                disabled={optimizerRunning}
-              >
-                {optimizerRunning ? 'กำลังประมวลผล...' : 'วิเคราะห์จัดสรรทรัพยากร'}
-              </button>
-            </div>
-
-            {/* Layer toggles */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ชั้นข้อมูลแผนที่</span>
-              </div>
-              <div className="toggle-grid">
-                {Object.entries(toggles).map(([k, v]) => (
-                  <div key={k} className="toggle-item">
-                    <span>{TOGGLE_LABELS[k] || k}</span>
-                    <div
-                      className={`toggle-switch ${v ? 'on' : ''}`}
-                      onClick={() => setToggles(p => ({ ...p, [k]: !p[k] }))}
-                    />
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Decision log */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">บันทึกการตัดสินใจ</span>
-                <button
-                  onClick={() => {
-                    const reason = window.prompt('เหตุผลการตัดสินใจ Override:');
-                    if (!reason) return;
-                    const officer = window.prompt('ชื่อเจ้าหน้าที่:') || 'ผบ.เหตุการณ์';
-                    addLog(`Override: ${activeRoute}`, true, reason, officer);
-                    addToast(`บันทึก Override เส้นทาง ${activeRoute} สำเร็จ`, 'success');
-                  }}
-                  style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: 'var(--danger)', borderRadius: 'var(--radius)', padding: '2px 8px', fontSize: 9, fontFamily: 'var(--font-en)', cursor: 'pointer' }}
-                >
-                  ✋ Override
-                </button>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {decisionLogs.map((log, idx) => (
-                  <div key={idx} style={{ background: 'var(--bg-panel)', border: `1px solid ${log.warn ? 'rgba(239,68,68,0.2)' : 'var(--border)'}`, borderLeft: `3px solid ${log.warn ? 'var(--danger)' : 'var(--blue-primary)'}`, padding: '8px 10px', borderRadius: 'var(--radius)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, marginBottom: 3 }}>
-                      <strong style={{ color: log.warn ? 'var(--danger)' : '#60a5fa' }}>{log.route}</strong>
-                      <span style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{log.time}</span>
+                <div className="chat-messages-v2">
+                  {chatMessages.map((msg, idx) => (
+                    <div key={idx} className={`chat-bubble-v2 ${msg.role}`}>
+                      {msg.html
+                        ? <span dangerouslySetInnerHTML={{ __html: msg.html }} />
+                        : msg.text}
+                      <span className="btime">{msg.time}</span>
                     </div>
-                    <p style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.4 }}>{log.reason}</p>
-                    <span style={{ fontSize: 9, color: 'var(--text-3)' }}>ผู้บันทึก: {log.officer}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* System log */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">บันทึกระบบ</span>
-              </div>
-              <div style={{ background: 'var(--bg-base)', borderRadius: 'var(--radius)', padding: '8px 10px', maxHeight: 110, overflowY: 'auto' }}>
-                {terminalLogs.length === 0 ? (
-                  <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-                    เชื่อมต่อศูนย์ปฏิบัติการ GISTDA...
-                  </div>
-                ) : terminalLogs.map((log, idx) => (
-                  <div key={idx} style={{ fontSize: 10, fontFamily: 'var(--font-mono)', lineHeight: 1.6, color: log.type === 'warn' ? 'var(--warn)' : log.type === 'error' ? 'var(--danger)' : 'var(--text-3)' }}>
-                    [{log.time}] {log.text}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-          </div>{/* end sidebar-scroll */}
-
-          {/* ── AI Chat ── fixed at sidebar bottom */}
-          <div className="chat-section">
-            <div style={{ padding: '6px 16px', borderBottom: '1px solid var(--border)' }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 1, fontFamily: 'var(--font-en)' }}>
-                Typhoon AI · ผู้ช่วยปฏิบัติการ
-              </span>
-            </div>
-            <div className="chat-messages">
-              {chatMessages.map((msg, idx) => (
-                <div key={idx} className={`chat-bubble ${msg.role}`}>
-                  {msg.html
-                    ? <span dangerouslySetInnerHTML={{ __html: msg.html }} />
-                    : msg.text}
-                  <span className="bubble-time">{msg.time}</span>
+                  ))}
+                  {isTyping && (
+                    <div className="chat-typing-v2">
+                      <div className="typing-dot-v2" /><div className="typing-dot-v2" /><div className="typing-dot-v2" />
+                    </div>
+                  )}
                 </div>
-              ))}
-              {isTyping && (
-                <div className="chat-typing">
-                  <div className="typing-dot" /><div className="typing-dot" /><div className="typing-dot" />
+                <div className="chat-input-v2">
+                  <input
+                    className="chat-input-field-v2"
+                    placeholder="สอบถามสถานการณ์น้ำท่วม..."
+                    value={chatInput}
+                    onChange={e => setChatInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && sendChat()}
+                  />
+                  <button className="chat-send-btn-v2" onClick={() => sendChat()} disabled={isTyping}>ส่ง</button>
                 </div>
-              )}
-            </div>
-            <div className="chat-input-row">
-              <input
-                className="chat-input-field"
-                placeholder="สอบถามสถานการณ์น้ำท่วม..."
-                value={chatInput}
-                onChange={e => setChatInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && sendChat()}
-              />
-              <button className="chat-send-btn" onClick={() => sendChat()} disabled={isTyping}>
-                ส่ง
+              </div>
+
+              {/* Mission button */}
+              <button
+                className="mission-btn"
+                onClick={() => addToast('เริ่มปฏิบัติการกู้ภัยสำเร็จ', 'success')}
+              >
+                เริ่มปฏิบัติการกู้ภัย
               </button>
+
             </div>
-          </div>
+          </aside>
 
-          <button
-            className="mission-btn"
-            onClick={() => addToast('เริ่มปฏิบัติการกู้ภัยสำเร็จ — กำลังแจ้งหน่วยงานที่เกี่ยวข้อง', 'success')}
-          >
-            เริ่มปฏิบัติการกู้ภัย
-          </button>
-
-        </aside>
-      </div>
+        </div>
       )}
 
       {/* ── Geospatial Page ── */}
@@ -1327,8 +1178,7 @@ export default function App() {
                   onChange={e => setGeoSearch(e.target.value)}
                 />
                 <button
-                  className="alert-banner-refresh"
-                  style={{ padding: '6px 12px', fontSize: '11px', whiteSpace: 'nowrap' }}
+                  style={{ background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)', borderRadius: 'var(--radius)', padding: '6px 12px', fontSize: '11px', whiteSpace: 'nowrap', cursor: 'pointer', fontFamily: 'var(--font-th)' }}
                   onClick={fetchGistdaFloodData}
                 >
                   อัปเดตข้อมูล GISTDA API
@@ -1409,7 +1259,7 @@ export default function App() {
 
                     {WEATHER_STATIONS.map((st) => {
                       const d = stationData[st.id];
-                      const rainVal = d?.rr != null && !isNaN(d.rr) ? Number(d.rr) : 0;
+                      const rainVal = d?.rain != null && !isNaN(d.rain) ? Number(d.rain) : 0;
                       const scale = 220; 
                       const dx = (st.lon - 98.99) * scale;
                       const dy = -(st.lat - 18.79) * scale; 
@@ -1442,7 +1292,7 @@ export default function App() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '4px' }}>
                       <span style={{ color: 'var(--text-3)' }}>ปริมาณฝนเฉลี่ยรายชั่วโมง:</span>
                       <strong>
-                        {(WEATHER_STATIONS.reduce((acc, curr) => acc + (stationData[curr.id]?.rr || 0), 0) / WEATHER_STATIONS.length).toFixed(2)} mm/hr
+                        {(WEATHER_STATIONS.reduce((acc, curr) => acc + (stationData[curr.id]?.rain || 0), 0) / WEATHER_STATIONS.length).toFixed(2)} mm/hr
                       </strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '4px' }}>
@@ -1564,7 +1414,7 @@ export default function App() {
                   <div style={{ position: 'relative', width: '160px', height: '160px', borderRadius: '50%', background: `conic-gradient(var(--blue-primary) ${optimizerProgress}%, var(--bg-panel-alt) ${optimizerProgress}% 100%)`, display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', boxShadow: '0 0 20px var(--blue-glow)' }}>
                     <div style={{ position: 'absolute', inset: '8px', background: 'var(--bg-panel)', borderRadius: '50%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
                       <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>AI PROGRESS</span>
-                      <strong style={{ fontSize: '28px', color: '#fff', fontFamily: 'var(--font-mono)' }}>{optimizerProgress}%</strong>
+                      <strong style={{ fontSize: '28px', color: 'var(--text-1)', fontFamily: 'var(--font-mono)' }}>{optimizerProgress}%</strong>
                       <span style={{ fontSize: '9px', color: optimizerRunning ? 'var(--warn)' : 'var(--safe)', fontWeight: '600' }}>
                         {optimizerRunning ? 'OPTIMIZING...' : 'SOLVER READY'}
                       </span>
@@ -1594,7 +1444,7 @@ export default function App() {
                       <div>[INFO] Graph matrices: 3 sectors, 12 flood nodes.</div>
                       {optimizerProgress > 10 && <div style={{ color: 'var(--warn)' }}>[CALC] Simulation of path risk coefficient for Sector A completed.</div>}
                       {optimizerProgress > 40 && <div style={{ color: 'var(--warn)' }}>[CALC] Re-routing vehicles to circumvent blocked Route C.</div>}
-                      {optimizerProgress > 70 && <div style={{ color: '#60a5fa' }}>[ALLO] Allocating teams from high altitude to lower floodplain...</div>}
+                      {optimizerProgress > 70 && <div style={{ color: 'var(--blue-primary)' }}>[ALLO] Allocating teams from high altitude to lower floodplain...</div>}
                       {optimizerProgress === 100 && <div style={{ color: 'var(--safe)' }}>[DONE] Resource solver task: evacuated 68 priority survivors successfully.</div>}
                     </div>
                   </div>
@@ -1610,38 +1460,38 @@ export default function App() {
                 <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   
                   {[
-                    { id: 'A', name: 'เขตพื้นที่เหนือ (อำเภอแม่ริม - ช้างเผือก)', officer: 'ร.ต.อ. นพดล สุวรรณดิษฐ์', progress: 90, status: 'ปลอดภัยสูง', tag: 'tag-safe', count: vehicleData.A?.vehicle_count ?? 0, speed: vehicleData.A?.avg_speed ?? 0 },
-                    { id: 'B', name: 'เขตพื้นที่กลาง (เมืองเชียงใหม่ - คูเมือง)', officer: 'พ.ต.ท. สมชาติ ประชาไทย', progress: 65, status: 'หนาแน่น/ระวัง', tag: 'tag-warn', count: vehicleData.B?.vehicle_count ?? 0, speed: vehicleData.B?.avg_speed ?? 0 },
-                    { id: 'C', name: 'เขตพื้นที่ใต้ (อำเภอสารภี - หางดง)', officer: 'จ.ส.ต. อรรถพล รอดคง', progress: 20, status: 'วิกฤต/น้ำหลาก', tag: 'tag-danger', count: vehicleData.C?.vehicle_count ?? 0, speed: vehicleData.C?.avg_speed ?? 0 }
+                    { id: 'A', name: 'เขตพื้นที่เหนือ (อ.แม่สาย - อ.เมืองเชียงราย)', officer: 'ร.ต.อ. นพดล สุวรรณดิษฐ์', progress: 90, status: 'ปลอดภัยสูง', tag: 'tag-safe', count: vehicleData.A?.vehicle_count ?? 0, speed: vehicleData.A?.avg_speed ?? 0 },
+                    { id: 'B', name: 'เขตพื้นที่กลาง (อ.เมืองเชียงราย - อ.เทิง)', officer: 'พ.ต.ท. สมชาติ ประชาไทย', progress: 65, status: 'หนาแน่น/ระวัง', tag: 'tag-warn', count: vehicleData.B?.vehicle_count ?? 0, speed: vehicleData.B?.avg_speed ?? 0 },
+                    { id: 'C', name: 'เขตพื้นที่ใต้ (อ.เวียงป่าเป้า - อ.เชียงของ)', officer: 'จ.ส.ต. อรรถพล รอดคง', progress: 20, status: 'วิกฤต/น้ำหลาก', tag: 'tag-danger', count: vehicleData.C?.vehicle_count ?? 0, speed: vehicleData.C?.avg_speed ?? 0 }
                   ].map(sector => (
                     <div key={sector.id} style={{ background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
-                          <strong style={{ fontSize: '12px', color: '#fff' }}>Sector {sector.id} - {sector.name}</strong>
+                          <strong style={{ fontSize: '12px', color: 'var(--text-1)' }}>Sector {sector.id} — {sector.name}</strong>
                           <div style={{ fontSize: '10px', color: 'var(--text-3)', marginTop: '2px' }}>ผู้บัญชาการพื้นที่: {sector.officer}</div>
                         </div>
                         <span className={`route-status-tag ${sector.tag}`}>{sector.status}</span>
                       </div>
-                      
+
                       <div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-2)', marginBottom: '4px' }}>
                           <span>ความคืบหน้าการระบายพลช่วยเหลือ</span>
                           <strong>{sector.progress}%</strong>
                         </div>
-                        <div style={{ height: '4px', background: 'var(--bg-panel)', borderRadius: '2px', overflow: 'hidden' }}>
+                        <div style={{ height: '4px', background: 'var(--border)', borderRadius: '2px', overflow: 'hidden' }}>
                           <div style={{ width: `${sector.progress}%`, height: '100%', background: sector.id === 'A' ? 'var(--safe)' : sector.id === 'B' ? 'var(--warn)' : 'var(--danger)' }} />
                         </div>
                       </div>
 
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', fontSize: '10px', marginTop: '4px' }}>
-                        <div style={{ background: 'var(--bg-panel)', padding: '4px 6px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-3)' }}>ปริมาณจราจร:</span> <strong style={{ color: '#fff' }}>{sector.count} คัน</strong>
+                        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '4px 6px', borderRadius: '4px' }}>
+                          <span style={{ color: 'var(--text-3)' }}>จราจร:</span> <strong style={{ color: 'var(--text-1)' }}>{sector.count} คัน</strong>
                         </div>
-                        <div style={{ background: 'var(--bg-panel)', padding: '4px 6px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-3)' }}>ความเร็วเฉลี่ย:</span> <strong style={{ color: '#fff' }}>{sector.speed} กม/ชม</strong>
+                        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '4px 6px', borderRadius: '4px' }}>
+                          <span style={{ color: 'var(--text-3)' }}>ความเร็ว:</span> <strong style={{ color: 'var(--text-1)' }}>{sector.speed} กม/ชม</strong>
                         </div>
-                        <div style={{ background: 'var(--bg-panel)', padding: '4px 6px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-3)' }}>ทีมปฏิบัติการ:</span> <strong style={{ color: '#fff' }}>1 ทีมหลัก</strong>
+                        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '4px 6px', borderRadius: '4px' }}>
+                          <span style={{ color: 'var(--text-3)' }}>ทีม:</span> <strong style={{ color: 'var(--text-1)' }}>1 ทีมหลัก</strong>
                         </div>
                       </div>
                     </div>
@@ -1679,7 +1529,7 @@ export default function App() {
                 <div style={{ textAlign: 'center', marginBottom: '20px' }}>
                   <div style={{ fontSize: '32px', filter: 'grayscale(1) sepia(100%) hue-rotate(0deg) saturate(1000%)' }}>🛡️</div>
                   <h2 style={{ fontSize: '14px', fontWeight: '800', marginTop: '10px', color: '#000', fontFamily: 'var(--font-th)' }}>
-                    ศูนย์บัญชาการสถานการณ์ภัยพิบัติเชียงใหม่ร่วม (GISTDA & TMD & DDPM)
+                    ศูนย์บัญชาการสถานการณ์ภัยพิบัติเชียงรายร่วม (GISTDA & TMD & DDPM)
                   </h2>
                   <p style={{ fontSize: '10px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                     MEMORANDUM ON STATE EMERGENCY DISASTER MITIGATION
@@ -1700,8 +1550,8 @@ export default function App() {
                   <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๒. สภาพอากาศและการประเมินความเสี่ยง TMD</h3>
                   <p style={{ marginBottom: '16px' }}>
                     กรมอุตุนิยมวิทยา (TMD Live) ตรวจวัดอุณหภูมิปัจจุบันบริเวณตัวเมืองได้ {cityCur.tc != null ? `${cityCur.tc.toFixed(1)}°C` : '—'} 
-                    โดยมีปริมาณน้ำฝน {cityCur.rr != null ? `${cityCur.rr.toFixed(1)} มิลลิเมตร/ชั่วโมง` : '—'} 
-                    กำลังทิศทางลมพัด {cityCur.ws != null ? `${cityCur.ws.toFixed(1)} เมตร/วินาที` : '—'} 
+                    โดยมีปริมาณน้ำฝน {cityCur.rain != null ? `${cityCur.rain.toFixed(1)} มิลลิเมตร/ชั่วโมง` : '—'}
+                    กำลังทิศทางลมพัด {cityCur.ws10m != null ? `${cityCur.ws10m.toFixed(1)} เมตร/วินาที` : '—'}
                     สถานีเฝ้าระวังรายงานระดับน้ำสะสมอยู่ในโหมดเฝ้าระวังปานกลาง
                   </p>
 
@@ -1719,8 +1569,8 @@ export default function App() {
                       <div style={{ fontSize: '10px', color: '#333', marginTop: '4px' }}>Security Hash: <strong>SHA-256/GISTDA-EOC-989F</strong></div>
                     </div>
                     <div style={{ textAlign: 'center', width: '220px', borderTop: '1px solid #333', paddingTop: '8px', fontSize: '11px' }}>
-                      <strong>(ผู้ว่าราชการจังหวัดเชียงใหม่)</strong><br />
-                      ผู้บัญชาการศูนย์ป้องกันและบรรเทาสาธารณภัยเขตเชียงใหม่
+                      <strong>(ผู้ว่าราชการจังหวัดเชียงราย)</strong><br />
+                      ผู้บัญชาการศูนย์ป้องกันและบรรเทาสาธารณภัยเขตเชียงราย
                     </div>
                   </div>
                 </div>
@@ -1770,7 +1620,7 @@ export default function App() {
                       decisionLogs.map((log, idx) => (
                         <div key={idx} style={{ background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderLeft: '3px solid var(--blue-primary)', padding: '8px 10px', borderRadius: 'var(--radius)' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', marginBottom: '2px' }}>
-                            <strong style={{ color: '#60a5fa' }}>{log.route}</strong>
+                            <strong style={{ color: 'var(--blue-primary)' }}>{log.route}</strong>
                             <span style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{log.time}</span>
                           </div>
                           <p style={{ fontSize: '11px', color: 'var(--text-2)', lineHeight: '1.3' }}>{log.reason}</p>
@@ -1787,8 +1637,8 @@ export default function App() {
       )}
 
       {/* ── Footer ── */}
-      <footer className="gov-footer no-print">
-        <span>ระบบวิเคราะห์น้ำท่วมและข้อมูลดาวเทียมศูนย์บัญชาการสถานการณ์ภัยพิบัติเชียงใหม่ร่วม · GISTDA sphere</span>
+      <footer className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 14px', background: 'var(--bg-surface)', borderTop: '1px solid var(--border)', fontSize: '9px', color: 'var(--text-3)', flexShrink: 0 }}>
+        <span>ระบบวิเคราะห์น้ำท่วม จ.เชียงราย · GISTDA · TMD · DDPM</span>
         <span>TMD · OSRM · Supabase CCTV · Typhoon AI · {new Date().toLocaleDateString('th-TH')}</span>
       </footer>
 
