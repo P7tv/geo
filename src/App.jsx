@@ -125,6 +125,14 @@ const WeatherFieldOverlay = ({ windSpeed, windDeg, rainfallData }) => {
 };
 
 // --- GISTDA Sphere Map ---
+const FLOOD_WMS = {
+  'freq':   { path: 'flood-freq/wms',   layer: '6799ab8c6f832362f99030e6' },
+  '1day':   { path: 'flood/1day/wms',   layer: '676e3c965e01949dda35fa23' },
+  '3days':  { path: 'flood/3days/wms',  layer: '676e3d66d710b3b9a64a503e' },
+  '7days':  { path: 'flood/7days/wms',  layer: '673bffd740c0fc078a820adb' },
+  '30days': { path: 'flood/30days/wms', layer: '673c0081a9d1a551eebff626' },
+};
+
 const SHELTER_ICONS = {
   hospital:     { emoji: '🏥', color: 'rgba(59,130,246,0.8)'  },
   fire_station: { emoji: '🚒', color: 'rgba(239,68,68,0.8)'   },
@@ -133,10 +141,10 @@ const SHELTER_ICONS = {
   assembly_point:{ emoji: '👥', color: 'rgba(245,158,11,0.8)' },
 };
 
-const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters }) => {
+const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, floodRange, histFreqRange }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
-  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], sarPolygons: [], trafficMarkers: [], riskCircles: [], rainAreas: [], shelterMarkers: [], floodFreqLayer: null });
+  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], sarPolygons: [], trafficMarkers: [], riskCircles: [], rainAreas: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null });
   const [loading, setLoading] = useState(true);
   const [mapError, setMapError] = useState(false);
 
@@ -366,7 +374,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     }
   }, [stationData, toggles.cloud]);
 
-  // GISTDA flood-freq WMS layer (historical flood frequency raster)
+  // GISTDA flood-freq WMS layer — switches based on histFreqRange
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
     if (layersRef.current.floodFreqLayer) {
@@ -374,18 +382,41 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       layersRef.current.floodFreqLayer = null;
     }
     if (!toggles.histFreq) return;
+    const wms = FLOOD_WMS[histFreqRange];
+    if (!wms) return;
     const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
-    // Layer name 6799ab8c... confirmed from GetCapabilities; queryable=0 so visual-only
-    const layer = new window.sphere.Layer('flood-freq-wms', {
+    const layer = new window.sphere.Layer(`freq-wms-${histFreqRange}`, {
       type: window.sphere.LayerType.WMS,
-      url: 'https://api-gateway.gistda.or.th/api/2.0/resources/maps/flood-freq/wms?',
-      extraQuery: `LAYERS=6799ab8c6f832362f99030e6&STYLES=&api_key=${dataKey}`,
+      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
+      extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
       zoomRange: { min: 1, max: 20 },
       zIndex: 3,
     });
     mapInstance.current.Layers.add(layer);
     layersRef.current.floodFreqLayer = layer;
-  }, [toggles.histFreq]);
+  }, [toggles.histFreq, histFreqRange]);
+
+  // GISTDA flood WMS layer — switches based on floodRange
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    if (layersRef.current.floodWmsLayer) {
+      mapInstance.current.Layers.remove(layersRef.current.floodWmsLayer);
+      layersRef.current.floodWmsLayer = null;
+    }
+    if (!toggles.flood) return;
+    const wms = FLOOD_WMS[floodRange];
+    if (!wms) return;
+    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    const layer = new window.sphere.Layer(`flood-wms-${floodRange}`, {
+      type: window.sphere.LayerType.WMS,
+      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
+      extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
+      zoomRange: { min: 1, max: 20 },
+      zIndex: 4,
+    });
+    mapInstance.current.Layers.add(layer);
+    layersRef.current.floodWmsLayer = layer;
+  }, [toggles.flood, floodRange]);
 
   // Emergency facilities from OSM
   useEffect(() => {
@@ -435,6 +466,8 @@ export default function App() {
   const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, cloud: true, satellite: true, sarMask: true, vehicles: true, histFreq: false });
   const [floodRange, setFloodRange] = useState('7days');
   const [floodRangeOpen, setFloodRangeOpen] = useState(false);
+  const [histFreqRange, setHistFreqRange] = useState('freq');
+  const [histFreqRangeOpen, setHistFreqRangeOpen] = useState(false);
 
   const [incidents, setIncidents] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -1028,6 +1061,32 @@ export default function App() {
                               )}
                             </div>
                           )}
+                          {k === 'histFreq' && (
+                            <div style={{ position: 'relative' }}>
+                              <button
+                                onClick={() => setHistFreqRangeOpen(o => !o)}
+                                style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-2)', color: 'var(--text-2)', cursor: 'pointer', lineHeight: 1.6 }}
+                              >
+                                {histFreqRange} ▾
+                              </button>
+                              {histFreqRangeOpen && (
+                                <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6, zIndex: 999, minWidth: 100, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                                  {['freq', '1day', '3days', '7days', '30days'].map(r => (
+                                    <div
+                                      key={r}
+                                      onClick={() => { setHistFreqRange(r); setHistFreqRangeOpen(false); }}
+                                      style={{ padding: '6px 12px', fontSize: 11, cursor: 'pointer', color: r === histFreqRange ? 'var(--accent)' : 'var(--text-1)', fontWeight: r === histFreqRange ? 700 : 400, whiteSpace: 'nowrap' }}
+                                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-2)'}
+                                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                    >
+                                      {r === 'freq' ? 'ซ้ำซาก' : r === '1day' ? '1 วัน' : r === '3days' ? '3 วัน' : r === '7days' ? '7 วัน' : '30 วัน'}
+                                      {r === histFreqRange && ' ✓'}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           <div className={`toggle-sw ${v ? 'on' : ''}`} onClick={() => setToggles(p => ({ ...p, [k]: !p[k] }))} />
                         </div>
                       </div>
@@ -1086,6 +1145,8 @@ export default function App() {
               vehicleData={vehicleData}
               gistdaRiskPoints={gistdaRiskPoints}
               shelters={shelters}
+              floodRange={floodRange}
+              histFreqRange={histFreqRange}
             />
 
             {/* Map legend */}
