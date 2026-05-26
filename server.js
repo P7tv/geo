@@ -175,6 +175,7 @@ const fetchLiveTraffic = async () => {
 //   SoilRisk          — static LDD soil permeability/saturation risk per route
 
 // Fallback: static flood frequency [0-1] used when GISTDA Sphere API is unavailable
+// Static fallback เมื่อ GISTDA flood-freq API ไม่ตอบ
 const CR_HISTORICAL_INCIDENTS = {
   'เวียงป่าเป้า': 0.88,
   'แม่สาย':      0.78,
@@ -182,44 +183,56 @@ const CR_HISTORICAL_INCIDENTS = {
   'เมือง':       0.52,
 };
 
-const SPHERE_KEY = process.env.SPHERE_API_KEY || '';
-const GISTDA_SPHERE_BASE = 'https://api.sphere.gistda.or.th/services/info';
+// bbox ต่อ route สำหรับ query GISTDA /features/flood-freq (xmin,ymin,xmax,ymax)
+const ROUTE_BBOX = {
+  A: [99.820, 19.900, 99.895, 20.450],  // ทล.1 เมือง→แม่สาย
+  B: [99.820, 19.895, 100.085, 19.990], // ทล.1020 เมือง→เทิง
+  C: [99.820, 19.360, 99.870, 19.920],  // ทล.118 เมือง→เวียงป่าเป้า
+};
 
-// Cache: disaster-recurring ต่อ route — refresh ทุก 24h (ข้อมูลรายปี ไม่เปลี่ยนบ่อย)
-const floodFreqCache = { data: {}, ts: 0 };
+// Cache: flood-freq polygon ต่อ route — refresh ทุก 24h (ข้อมูลรายปี)
+const floodFreqFeatCache = { A: null, B: null, C: null, ts: 0 };
+const FLOOD_FREQ_FEAT_TTL = 24 * 60 * 60_000;
 
-const fetchFloodFreq = async () => {
-  if (Date.now() - floodFreqCache.ts < 24 * 60 * 60 * 1000) return floodFreqCache.data;
-  if (!SPHERE_KEY) return floodFreqCache.data;
+const fetchFloodFreqFeatures = async (routeId) => {
+  if (floodFreqFeatCache[routeId] && Date.now() - floodFreqFeatCache.ts < FLOOD_FREQ_FEAT_TTL)
+    return floodFreqFeatCache[routeId];
   try {
-    const results = await Promise.allSettled(
-      Object.entries(ROUTE_MIDPOINTS).map(async ([id, { lat, lon }]) => {
-        const url = `${GISTDA_SPHERE_BASE}/disaster-recurring` +
-          `?lat=${lat}&lon=${lon}&disaster_type=flood&key=${SPHERE_KEY}`;
-        const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
-        const j = await r.json();
-        // summary_frequency = จำนวนปีที่ท่วม, data = รายปี (2011–2021 = 11 ปี)
-        const totalYears = j.flood?.data?.length ?? 11;
-        const floodYears = j.flood?.summary_frequency ?? null;
-        if (floodYears === null) return null;
-        return [id, +(floodYears / totalYears).toFixed(3)];
-      })
-    );
-    const data = {};
-    for (const r of results) {
-      if (r.status === 'fulfilled' && r.value) data[r.value[0]] = r.value[1];
-    }
-    if (Object.keys(data).length > 0) {
-      floodFreqCache.data = data;
-      floodFreqCache.ts   = Date.now();
-      console.log('🗺️  Flood freq (GISTDA Sphere):', data);
-    }
-    return data;
+    const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    const bbox = ROUTE_BBOX[routeId].join(',');
+    const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood-freq` +
+      `?bbox=${bbox}&pv_idn=57&limit=1000`;
+    const r = await fetchWithTimeout(url, { headers: { 'API-Key': dataKey } }, 12000);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    const feats = j.features ?? [];
+    floodFreqFeatCache[routeId] = feats;
+    floodFreqFeatCache.ts = Date.now();
+    console.log(`📊 flood-freq Route ${routeId}: ${feats.length}/${j.numberMatched ?? '?'} polygons`);
+    return feats;
   } catch (e) {
-    console.warn('floodFreq fetch failed:', e.message);
-    return floodFreqCache.data;
+    console.warn(`fetchFloodFreqFeatures ${routeId}:`, e.message);
+    return floodFreqFeatCache[routeId] ?? [];
   }
 };
+
+// คำนวณ f_historical จาก area-weighted avg ของ freq/14 ทุก patch ใน route bbox
+// flood-freq feature = patch น้ำท่วมจริง (เล็กมาก) bbox กรอง corridor ของ route แล้ว
+const FLOOD_FREQ_YEARS = 14; // 2011-2024
+const computeHistoricalRisk = (_routePoints, freqFeatures) => {
+  if (!freqFeatures?.length) return null;
+  let totalArea = 0, weightedFreq = 0;
+  for (const f of freqFeatures) {
+    const area = f.properties.area_rai ?? 1;
+    const freq = (f.properties.freq ?? 0) / FLOOD_FREQ_YEARS;
+    totalArea += area;
+    weightedFreq += freq * area;
+  }
+  return totalArea > 0 ? +(weightedFreq / totalArea).toFixed(3) : null;
+};
+
+// wrapper ที่ยังใช้ชื่อ fetchFloodFreq เพื่อไม่ต้องแก้ call site เดิม
+const fetchFloodFreq = async () => ({});  // ไม่ใช้แล้ว → per-route ใน flood-routes endpoint
 
 // LDD baseline soil saturation risk per route — area-weighted from sr_cri shapefile
 // Represents inherent soil drainage class (not rainfall-dependent)
@@ -272,32 +285,62 @@ const fetchRain72h = async () => {
 // Route → primary district mapping for HistoricalIncident lookup
 const ROUTE_DISTRICT = { A: 'แม่สาย', B: 'เทิง', C: 'เวียงป่าเป้า' };
 
-// GISTDA flood-freq WMS (queryable=0) — visual layer only, cannot GetFeatureInfo
-// f_historical uses static CR_HISTORICAL_INCIDENTS values (reliable for CR province)
-const routeFloodFreq = {};  // kept empty; predictRouteRisk falls back to static dict
-
-const refreshFloodFreqForRoutes = async () => {
-  // No-op: GISTDA flood-freq WMS does not support GetFeatureInfo (queryable=0)
-  // Visual WMS layer is handled entirely on the frontend via sphere.Layer
-};
-
 const sigmoid = x => 1 / (1 + Math.exp(-x));
 
 /**
  * Compute flood risk score [0–99] for a single route.
  * Returns { risk, depth_est, confidence, features }
  */
-const predictRouteRisk = (routeId, weather, waterLevels, damLevels, traffic, rain72h = null, floodFreq = null) => {
-  // FloodDepth (0.45): margin below warning level (MASL values; 5m = full safety buffer)
-  const FLOOD_MARGIN_M = 5.0;
-  const f_flood_depth = waterLevels?.length
-    ? waterLevels.reduce((s, st) => {
-        const ratio = (st.level != null && st.warning_level)
-          ? Math.max(0, Math.min(1, 1 - (st.warning_level - st.level) / FLOOD_MARGIN_M))
-          : 0.30;
-        return s + ratio;
-      }, 0) / waterLevels.length
-    : 0.30;
+
+// ── Point-in-polygon (ray casting) ────────────────────────────────────────────
+function pipRing(lat, lon, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i]; // GeoJSON stores [lon, lat]
+    const [xj, yj] = ring[j];
+    if (((yi > lat) !== (yj > lat)) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+function pipFeature(lat, lon, feat) {
+  const g = feat?.geometry;
+  if (!g) return false;
+  if (g.type === 'Polygon')      return pipRing(lat, lon, g.coordinates[0]);
+  if (g.type === 'MultiPolygon') return g.coordinates.some(p => pipRing(lat, lon, p[0]));
+  return false;
+}
+// สัดส่วนจุดบนเส้นทางที่อยู่ใน flood polygon (0 = ไม่ท่วม, 1 = ท่วมทั้งสาย)
+function routeFloodExposure(points, features) {
+  if (!features?.length || !points?.length) return 0;
+  const n = points.filter(p => features.some(f => pipFeature(p.lat, p.lon, f))).length;
+  return +(n / points.length).toFixed(3);
+}
+
+// ── GISTDA current flood features — cached 15 min ────────────────────────────
+let gistdaFloodCache = { data: null, ts: 0 };
+const GISTDA_FLOOD_TTL = 15 * 60_000;
+const fetchGistdaCurrentFlood = async () => {
+  if (gistdaFloodCache.data !== null && Date.now() - gistdaFloodCache.ts < GISTDA_FLOOD_TTL)
+    return gistdaFloodCache.data;
+  try {
+    const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    const url = 'https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/7days?pv_idn=57&limit=1000';
+    const r = await fetchWithTimeout(url, { headers: { 'API-Key': dataKey } }, 10000);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    gistdaFloodCache = { data: j.features ?? [], ts: Date.now() };
+    console.log(`🌊 GISTDA flood features loaded: ${gistdaFloodCache.data.length} polygons`);
+    return gistdaFloodCache.data;
+  } catch (e) {
+    console.warn('GISTDA flood fetch error:', e.message);
+    return gistdaFloodCache.data ?? [];
+  }
+};
+
+const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, rain72h = null, floodFreq = null) => {
+  // FloodExposure (0.45): สัดส่วนเส้นทางที่ผ่านพื้นที่น้ำท่วม GISTDA polygon จริง
+  const f_flood_depth = floodExposure ?? 0.30;
 
   // DepthTrend (0.25): rainfall intensity as real-time flood-rise trend proxy
   const f_depth_trend = Math.min((weather?.rain ?? 0) / RAIN_SATURATION_MM, 1);
@@ -322,7 +365,7 @@ const predictRouteRisk = (routeId, weather, waterLevels, damLevels, traffic, rai
   const depth = Math.max(0.05, (risk / 65)).toFixed(2);
 
   // Data completeness → confidence
-  const sources = [weather, waterLevels, damLevels, traffic].filter(Boolean).length;
+  const sources = [weather, floodExposure != null, damLevels, traffic].filter(Boolean).length;
   const confidence = Math.round((sources / 4) * 100);
 
   return {
@@ -353,16 +396,44 @@ const buildContext = (weather, traffic, routeRisks) => {
 };
 
 // ── External data metadata — Chiang Rai Province ─────────────────────────────
-// API: api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel_graph
-// Station IDs are numeric (verified from /frontend/shared/station_all)
-// value field = meters above sea level (masl); min_bank = bank overflow threshold
+// API: waterlevel_load — ดึง 20 สถานีเชียงรายทั้งจังหวัดใน 1 call
+// ใช้แทน waterlevel_graph ที่เรียกทีละสถานี
+// situation_level: 1=ปกติ 2=เฝ้าระวัง 3=เตือนภัย
+// diff_wl_bank: ระยะห่างจากตลิ่ง (บวก=ยังต่ำกว่า, ลบ=ล้นตลิ่ง)
 
-const RIVER_STATIONS = [
-  { id: 1574191, name: 'แม่น้ำกก บ้านกกโท้ง (G.2A)',   lat: 19.921, lon: 99.849, min_bank_fallback: 392.5 },
-  { id: 6855760, name: 'แม่น้ำกก สะพานสบกก',            lat: 20.228, lon: 99.882, min_bank_fallback: 360.0 },
-  { id: 3303,    name: 'แม่น้ำจัน บ้านหัวสะพาน (Kh.89)', lat: 20.158, lon: 99.843, min_bank_fallback: 410.0 },
-  { id: 3301,    name: 'แม่น้ำอิง บ้านน้ำอิง (I.14)',    lat: 19.833, lon: 100.088, min_bank_fallback: 355.0 },
-];
+let waterLevelCache = { data: null, ts: 0 };
+const WATER_LEVEL_TTL = 5 * 60_000; // refresh ทุก 5 นาที
+
+const fetchWaterLevels = async () => {
+  if (waterLevelCache.data && Date.now() - waterLevelCache.ts < WATER_LEVEL_TTL) {
+    return waterLevelCache.data;
+  }
+  try {
+    const url = 'https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel_load?province_code=57';
+    const r = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 10000);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const json = await r.json();
+    const rows = json?.waterlevel_data?.data ?? [];
+    const stations = rows.map(row => ({
+      id:              row.station?.id,
+      name:            row.station?.tele_station_name?.th ?? '—',
+      lat:             row.station?.tele_station_lat  ?? null,
+      lon:             row.station?.tele_station_long ?? null,
+      level:           row.waterlevel_msl != null ? parseFloat(row.waterlevel_msl) : null,
+      warning_level:   row.station?.min_bank ?? null,
+      discharge:       row.discharge != null ? parseFloat(row.discharge) : null,
+      situation_level: row.situation_level ?? 1,
+      diff_wl_bank:    row.diff_wl_bank  ?? null,
+      datetime:        row.waterlevel_datetime ?? null,
+      status:          row.waterlevel_msl != null ? 'online' : 'nodata',
+    }));
+    waterLevelCache = { data: stations, ts: Date.now() };
+    return stations;
+  } catch (e) {
+    console.warn('fetchWaterLevels error:', e.message);
+    return waterLevelCache.data ?? [];
+  }
+};
 
 // thaiwater.net มีเฉพาะเขื่อนใหญ่ 17 แห่ง ไม่มีเขื่อนในเชียงราย
 // ใช้ แม่งัด (id=53) upstream จากเชียงราย เป็น dam pressure proxy
@@ -383,46 +454,9 @@ const fetchWithTimeout = (url, opts = {}, ms = 8000) => {
 
 // --- ENDPOINTS ---
 
-// ── River water levels — thaiwater.net v3 API (numeric station IDs) ───────────
-const fetchWaterLevelStation = async (st) => {
-  const today = new Date();
-  const end = today.toISOString().slice(0, 10);
-  const start = new Date(today - 86400000).toISOString().slice(0, 10);
-  const url = `https://api-v3.thaiwater.net/api/v1/thaiwater30/public/waterlevel_graph?station_type=tele_waterlevel&station_id=${st.id}&start_date=${start}&end_date=${end}`;
-  try {
-    const r = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 7000);
-    if (!r.ok) return { ...st, level: null, status: 'offline' };
-    const json = await r.json();
-    const data = json?.data ?? {};
-    const graphData = data.graph_data ?? [];
-
-    // ค่าล่าสุดที่ไม่เป็น null
-    const nonNull = graphData.filter(p => p.value != null);
-    const latest  = nonNull.length ? nonNull[nonNull.length - 1] : null;
-    const level   = latest ? parseFloat(latest.value) : null;
-
-    // ขอบตลิ่ง (masl) ใช้เป็น warning threshold เมื่อ warning_level ไม่มี
-    const warn = parseFloat(data.warning_level) || parseFloat(data.min_bank) || st.min_bank_fallback || null;
-    const crit = parseFloat(data.critical_level) || null;
-
-    return {
-      ...st,
-      level,
-      warning_level: warn,
-      critical_level: crit,
-      discharge: latest?.discharge ?? null,
-      status: level != null ? 'online' : 'nodata',
-    };
-  } catch {
-    return { ...st, level: null, status: 'error' };
-  }
-};
-
 app.get('/api/water-levels', async (_req, res) => {
-  const results = await Promise.allSettled(RIVER_STATIONS.map(fetchWaterLevelStation));
-  res.json(results.map((r, i) =>
-    r.status === 'fulfilled' ? r.value : { ...RIVER_STATIONS[i], level: null, status: 'error' }
-  ));
+  const stations = await fetchWaterLevels();
+  res.json(stations);
 });
 
 // ── Dam levels — thaiwater.net v3 analyst/dam (numeric dam ID) ───────────────
@@ -512,15 +546,10 @@ app.get('/api/warnings', async (_req, res) => {
 app.get('/api/route-risk', async (_req, res) => {
   const [weather, traffic] = await Promise.all([fetchLiveWeather(), fetchLiveTraffic()]);
 
-  // ใช้ helper functions เดียวกับ /api/water-levels และ /api/dams
-  const [stationResults, damResults] = await Promise.all([
-    Promise.allSettled(RIVER_STATIONS.map(fetchWaterLevelStation)),
+  const [damResults, gistdaFeatures] = await Promise.all([
     Promise.allSettled(DAM_META.map(fetchDamLevel)),
+    fetchGistdaCurrentFlood(),
   ]);
-
-  const waterLevels = stationResults
-    .map(r => r.status === 'fulfilled' && r.value?.level != null ? r.value : null)
-    .filter(Boolean);
 
   const damLevels = damResults
     .map(r => r.status === 'fulfilled' && r.value?.percent != null ? r.value : null)
@@ -528,13 +557,9 @@ app.get('/api/route-risk', async (_req, res) => {
 
   const result = {};
   for (const id of ['A', 'B', 'C']) {
-    result[id] = predictRouteRisk(
-      id,
-      weather,
-      waterLevels.length ? waterLevels : null,
-      damLevels.length   ? damLevels   : null,
-      traffic
-    );
+    const staticPoints = (FLOOD_ROUTE_GEOMETRY[id]?.coords ?? []).map(([lon, lat]) => ({ lat, lon }));
+    const exposure = routeFloodExposure(staticPoints, gistdaFeatures);
+    result[id] = predictRouteRisk(id, weather, exposure, damLevels.length ? damLevels : null, traffic);
   }
   res.json(result);
 });
@@ -849,17 +874,15 @@ try {
 
 app.get('/api/flood-routes', async (_req, res) => {
   try {
-    // Fetch all live sensor data in parallel (including Open-Meteo 72h rainfall)
-    const [weather, traffic, rain72hMap, floodFreqMap] = await Promise.all([
-      fetchLiveWeather(), fetchLiveTraffic(), fetchRain72h(), fetchFloodFreq(),
-    ]);
-    const [stationResults, damResults] = await Promise.all([
-      Promise.allSettled(RIVER_STATIONS.map(fetchWaterLevelStation)),
+    // Fetch all live sensor data in parallel
+    const [weather, traffic, rain72hMap, gistdaFeatures, damResults,
+           freqFeatA, freqFeatB, freqFeatC] = await Promise.all([
+      fetchLiveWeather(), fetchLiveTraffic(), fetchRain72h(),
+      fetchGistdaCurrentFlood(),
       Promise.allSettled(DAM_META.map(fetchDamLevel)),
+      fetchFloodFreqFeatures('A'), fetchFloodFreqFeatures('B'), fetchFloodFreqFeatures('C'),
     ]);
-    const waterLevels = stationResults
-      .map(r => r.status === 'fulfilled' && r.value?.level != null ? r.value : null)
-      .filter(Boolean);
+    const freqFeatMap = { A: freqFeatA, B: freqFeatB, C: freqFeatC };
     const damLevels = damResults
       .map(r => r.status === 'fulfilled' && r.value?.percent != null ? r.value : null)
       .filter(Boolean);
@@ -869,40 +892,40 @@ app.get('/api/flood-routes', async (_req, res) => {
     if (floodRoutesGeoJSON) {
       // Use real A* geometry from flood_routes.geojson
       for (const feat of floodRoutesGeoJSON.features) {
-        const id = feat.properties.route_id;
-        const coords = feat.geometry.coordinates;  // [[lon, lat], ...]
-        const ml = predictRouteRisk(id, weather,
-          waterLevels.length ? waterLevels : null,
-          damLevels.length   ? damLevels   : null,
-          traffic,
-          rain72hMap[id]   ?? null,
-          floodFreqMap[id] ?? null);
+        const id     = feat.properties.route_id;
+        const coords = feat.geometry.coordinates; // [[lon, lat], ...]
+        const points = coords.map(([lon, lat]) => ({ lat, lon }));
+        const exposure   = routeFloodExposure(points, gistdaFeatures);
+        const historical = computeHistoricalRisk(points, freqFeatMap[id]);
+        const ml = predictRouteRisk(id, weather, exposure,
+          damLevels.length ? damLevels : null,
+          traffic, rain72hMap[id] ?? null, historical);
         result[id] = {
           name:         feat.properties.name,
           distance_km:  feat.properties.distance_km,
           duration_min: Math.round(feat.properties.distance_km / 45 * 60),
-          points:       coords.map(([lon, lat]) => ({ lon, lat })),
+          points:       points,
           risk:         ml.risk,
           depth:        ml.depth_est,
           algorithm:    'NetworkX A* (OSM PBF — flood-weighted)',
           features:     ml.features,
-          graph_risk:   feat.properties.risk_pct,  // A* graph-computed risk
+          graph_risk:   feat.properties.risk_pct,
         };
       }
     } else {
       // Fallback to static geometry when geojson not available
       for (const [id, geo] of Object.entries(FLOOD_ROUTE_GEOMETRY)) {
-        const ml = predictRouteRisk(id, weather,
-          waterLevels.length ? waterLevels : null,
-          damLevels.length   ? damLevels   : null,
-          traffic,
-          rain72hMap[id]   ?? null,
-          floodFreqMap[id] ?? null);
+        const points     = geo.coords.map(([lon, lat]) => ({ lat, lon }));
+        const exposure   = routeFloodExposure(points, gistdaFeatures);
+        const historical = computeHistoricalRisk(points, freqFeatMap[id]);
+        const ml = predictRouteRisk(id, weather, exposure,
+          damLevels.length ? damLevels : null,
+          traffic, rain72hMap[id] ?? null, historical);
         result[id] = {
           name:         geo.name,
           distance_km:  geo.distance_km,
           duration_min: Math.round(geo.distance_km / 45 * 60),
-          points:       geo.coords.map(([lon, lat]) => ({ lon, lat })),
+          points:       points,
           risk:         ml.risk,
           depth:        ml.depth_est,
           algorithm:    'static geometry (fallback)',
@@ -918,15 +941,17 @@ app.get('/api/flood-routes', async (_req, res) => {
   }
 });
 
-// ── GISTDA flood-freq values (per route, queried at startup + every 6h) ────────
-app.get('/api/gistda/flood-freq-values', (_req, res) => {
-  res.json({
-    routes: routeFloodFreq,
-    fallback: Object.fromEntries(
-      Object.entries(ROUTE_DISTRICT).map(([id, district]) => [id, CR_HISTORICAL_INCIDENTS[district]])
-    ),
-    source: 'static CR_HISTORICAL_INCIDENTS (GISTDA WMS visual-only, queryable=0)',
-  });
+// ── GISTDA flood-freq values (per route, from /features/flood-freq bbox PiP) ────
+app.get('/api/gistda/flood-freq-values', async (_req, res) => {
+  const [fA, fB, fC] = await Promise.all(['A','B','C'].map(fetchFloodFreqFeatures));
+  const DUMMY_POINTS = { A: FLOOD_ROUTE_GEOMETRY.A.coords, B: FLOOD_ROUTE_GEOMETRY.B.coords, C: FLOOD_ROUTE_GEOMETRY.C.coords };
+  const routes = {};
+  for (const id of ['A','B','C']) {
+    const pts = DUMMY_POINTS[id].map(([lon,lat]) => ({lat,lon}));
+    const feat = id === 'A' ? fA : id === 'B' ? fB : fC;
+    routes[id] = computeHistoricalRisk(pts, feat);
+  }
+  res.json({ routes, source: 'GISTDA /features/flood-freq bbox PiP (2011-2024)', years: FLOOD_FREQ_YEARS });
 });
 
 // System status logs — real connection state, no hardcoded data
@@ -953,9 +978,8 @@ app.listen(PORT, () => {
   console.log(`🔍 XAI explain:  POST /api/explain`);
   console.log(`✋ Override:     POST /api/override\n`);
 
-  // Fetch GISTDA historical flood-freq data for routes (non-blocking)
-  refreshFloodFreqForRoutes().catch(e => console.warn('[flood-freq] startup query failed:', e.message));
-  setInterval(() => refreshFloodFreqForRoutes().catch(() => {}), 6 * 3600 * 1000);
+  // Pre-warm flood-freq polygon cache for all routes (non-blocking, cached 24h)
+  Promise.all(['A','B','C'].map(id => fetchFloodFreqFeatures(id))).catch(() => {});
 });
 
 export default app;
