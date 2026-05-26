@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from 'react';
+import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import './index.css';
 
 import { getVehicleRouteSummary, getAiBriefing, getTerminalLogs } from './services/vehicleApi';
@@ -27,6 +27,14 @@ const ROUTES_BASE = [
   { id: 'B', name: 'เส้นทาง B — ทล.118 เมือง→เทิง',   color: '#f59e0b', status: 'เสี่ยงปานกลาง', desc: 'ทล.118 ผ่านอ.เทิง น้ำท่วมบางส่วน คาดการณ์เพิ่ม' },
   { id: 'C', name: 'เส้นทาง C — ทางลัดเวียงป่าเป้า',   color: '#ef4444', status: 'เสี่ยงสูง',    desc: 'ทางลัดผ่านลุ่มน้ำลาว น้ำหลากฉับพลันสูงมาก'        },
 ];
+
+// Midpoints matching server.js ROUTE_MIDPOINTS — used to find nearest river station
+const ROUTE_ANCHOR = {
+  A: { lat: 20.171, lon: 99.857 },
+  B: { lat: 19.943, lon: 99.953 },
+  C: { lat: 19.642, lon: 99.845 },
+};
+const FLOOD_DEPTH_MAX_M = 3.0;
 
 const TOGGLE_LABELS = {
   flood: 'น้ำท่วม', wind: 'ลม', history: 'ประวัติ',
@@ -826,6 +834,24 @@ export default function App() {
   const activeData = { ...ROUTES_BASE.find(r => r.id === activeRoute), ...routePaths[activeRoute] };
   const allRoutesData = ROUTES_BASE.map(r => ({ ...r, ...routePaths[r.id] }));
 
+  // Flood depth per route from nearest river station — max(0, level - warning_level) in metres
+  const routeFloodDepth = useMemo(() => {
+    const base = { A: 0, B: 0, C: 0 };
+    if (!waterLevels?.length) return base;
+    for (const [id, anchor] of Object.entries(ROUTE_ANCHOR)) {
+      let nearest = null, minDist = Infinity;
+      for (const st of waterLevels) {
+        if (st.lat == null || st.lon == null) continue;
+        const d = getDist(anchor, st);
+        if (d < minDist) { minDist = d; nearest = st; }
+      }
+      if (nearest?.level != null && nearest?.warning_level != null) {
+        base[id] = parseFloat(Math.max(0, nearest.level - nearest.warning_level).toFixed(2));
+      }
+    }
+    return base;
+  }, [waterLevels]);
+
   // TMD warnings take priority over AI briefing for alert level
   const tmdAlertText = tmdWarnings?.warnings?.[0]?.description ?? tmdWarnings?.data?.[0]?.warning ?? null;
   const alertLevel = tmdAlertText ? 3 : (briefing.alertLevel ?? 1);
@@ -937,9 +963,10 @@ export default function App() {
                   const affRoads  = Math.round((ft.f_historical  ?? 0) * 100);
                   const vd        = vehicleData[route.id];
                   const isActive  = activeRoute === route.id;
+                  const depthM = routeFloodDepth[route.id] ?? 0;
                   const riskFactors = [
-                    { label: 'ระดับน้ำท่วม',   val: ft.f_flood_depth ?? 0 },
-                    { label: 'แนวโน้มน้ำ',      val: ft.f_depth_trend ?? 0 },
+                    { label: 'ระดับน้ำ (ม.)', val: Math.min(1, depthM / FLOOD_DEPTH_MAX_M), raw: depthM },
+                    { label: 'แนวโน้มน้ำ',    val: ft.f_depth_trend ?? 0 },
                     { label: 'ประวัติน้ำท่วม', val: ft.f_historical  ?? 0 },
                     { label: 'ความเสี่ยงดิน',  val: ft.f_soil        ?? 0 },
                   ];
@@ -988,7 +1015,7 @@ export default function App() {
                           {/* Risk factors bar chart */}
                           <div className="rc-risk-factors" onClick={e => e.stopPropagation()}>
                             <div className="rf-title">Risk Factors</div>
-                            {riskFactors.map(({ label, val }) => {
+                            {riskFactors.map(({ label, val, raw }) => {
                               const pct = Math.round(val * 100);
                               const fc  = pct >= 70 ? 'var(--danger)' : pct >= 40 ? 'var(--warn)' : 'var(--safe)';
                               return (
@@ -997,7 +1024,7 @@ export default function App() {
                                   <div className="rf-track">
                                     <div className="rf-fill" style={{ width: `${pct}%`, background: fc }} />
                                   </div>
-                                  <span className="rf-pct">{pct}%</span>
+                                  <span className="rf-pct">{raw != null ? `${raw.toFixed(2)} ม.` : `${pct}%`}</span>
                                 </div>
                               );
                             })}
@@ -1168,8 +1195,8 @@ export default function App() {
               <div className="mar-stats">
                 <span>{activeData.duration ?? '--'} น.</span>
                 <span>{activeData.distance ?? '--'} กม.</span>
-                <span style={{ color: (activeData.depth ?? 0) > 0.8 ? 'var(--danger)' : 'var(--text-2)' }}>
-                  น้ำ {activeData.depth ?? '--'} ม.
+                <span style={{ color: (routeFloodDepth[activeRoute] ?? 0) > 0.8 ? 'var(--danger)' : 'var(--text-2)' }}>
+                  น้ำ {(routeFloodDepth[activeRoute] ?? 0).toFixed(2)} ม.
                 </span>
               </div>
             </div>
