@@ -173,11 +173,27 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     layersRef.current.riskCircles = [];
     if (!toggles.flood) return;
     gistdaRiskPoints.forEach(pt => {
-      const circle = new window.sphere.Circle({ lon: pt.lon, lat: pt.lat }, 1200, {
-        lineColor: 'rgba(59,130,246,0.35)', fillColor: 'rgba(59,130,246,0.06)',
-      });
-      mapInstance.current.Overlays.add(circle);
-      layersRef.current.riskCircles.push(circle);
+      const severity = pt.severity ?? 0.6;
+      const color = severity > 0.8 ? '#ef4444' : severity > 0.6 ? '#f59e0b' : '#3b82f6';
+      const alpha = 0.12 + severity * 0.15;
+
+      // แสดง polygon segment ต่อตำบล ถ้ามี geometry จาก GISTDA API
+      if (pt.geometry?.type === 'Polygon' || pt.geometry?.type === 'MultiPolygon') {
+        const rings = pt.geometry.type === 'Polygon'
+          ? [pt.geometry.coordinates[0]]
+          : pt.geometry.coordinates.map(c => c[0]);
+        rings.forEach(ring => {
+          const pts2 = ring.map(([ln, lt]) => ({ lon: ln, lat: lt }));
+          const poly = new window.sphere.Polygon(pts2, {
+            lineColor: `${color}cc`,
+            fillColor: `${color}${Math.round(alpha * 255).toString(16).padStart(2, '0')}`,
+            lineWidth: 1.5,
+            title: pt.name,
+          });
+          mapInstance.current.Overlays.add(poly);
+          layersRef.current.riskCircles.push(poly);
+        });
+      }
     });
   }, [gistdaRiskPoints, toggles.flood]);
 
@@ -417,6 +433,8 @@ export default function App() {
   const [routePaths, setRoutePaths] = useState({});
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
   const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, cloud: true, satellite: true, sarMask: true, vehicles: true, histFreq: false });
+  const [floodRange, setFloodRange] = useState('7days');
+  const [floodRangeOpen, setFloodRangeOpen] = useState(false);
 
   const [incidents, setIncidents] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -513,20 +531,19 @@ export default function App() {
     } catch (_) { addToast('XAI endpoint ไม่ตอบสนอง', 'warn'); }
   };
 
-  const fetchGistdaFloodData = async () => {
+  const fetchGistdaFloodData = async (range = floodRange) => {
     try {
-      const res = await fetch('http://localhost:3001/api/gistda/flood');
+      const res = await fetch(`http://localhost:3001/api/gistda/flood?range=${range}`);
       if (!res.ok) throw new Error(`GISTDA API ${res.status}`);
       const data = await res.json();
-      // API returns GeoJSON FeatureCollection; features[] empty when no active flooding (not an error)
       const features = data?.features ?? [];
       if (features.length === 0) {
-        addToast('GISTDA: ไม่มีข้อมูลน้ำท่วมที่ใช้งานอยู่ในปัจจุบัน (7 วัน)', 'info');
+        addToast(`GISTDA: ไม่มีข้อมูลน้ำท่วม (${range})`, 'info');
         return;
       }
       const pts = features.map(f => {
         const p = f.properties ?? {};
-        // Extract centroid from geometry (Point → direct, Polygon → first coordinate ring centroid)
+        // คำนวณ centroid จาก geometry สำหรับ fallback marker
         let lon = null, lat = null;
         if (f.geometry?.type === 'Point') {
           [lon, lat] = f.geometry.coordinates;
@@ -538,10 +555,12 @@ export default function App() {
           lat = lats.reduce((a, b) => a + b, 0) / lats.length;
         }
         return {
-          name:     p.ap_tn || p.pv_tn || 'GISTDA',
-          lat:      lat,
-          lon:      lon,
+          name:     p.tb_tn || p.ap_tn || p.pv_tn || 'GISTDA',
+          tb_idn:   p.tb_idn,
+          ap_idn:   p.ap_idn,
+          lat, lon,
           severity: parseFloat(p.area_rai ? Math.min(p.area_rai / 10000, 1) : 0.8),
+          geometry: f.geometry ?? null,
         };
       }).filter(pt => pt.lat && pt.lon);
       if (pts.length > 0) {
@@ -678,6 +697,11 @@ export default function App() {
   useEffect(() => {
     if (Object.keys(stationData).length > 0) fetchRealRoutes();
   }, [stationData, incidents, gistdaRiskPoints]);
+
+  useEffect(() => {
+    setGistdaRiskPoints(CR_RISK_POINTS);
+    fetchGistdaFloodData(floodRange);
+  }, [floodRange]);
 
   const sendChat = async (presetText = null) => {
     const msg = (presetText ?? chatInput).trim();
@@ -974,9 +998,39 @@ export default function App() {
                 </div>
                 <div className="toggle-grid-v2">
                   {Object.entries(toggles).map(([k, v]) => (
-                    <div key={k} className="toggle-item-v2">
-                      <span>{TOGGLE_LABELS[k] || k}</span>
-                      <div className={`toggle-sw ${v ? 'on' : ''}`} onClick={() => setToggles(p => ({ ...p, [k]: !p[k] }))} />
+                    <div key={k}>
+                      <div className="toggle-item-v2">
+                        <span>{TOGGLE_LABELS[k] || k}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          {k === 'flood' && (
+                            <div style={{ position: 'relative' }}>
+                              <button
+                                onClick={() => setFloodRangeOpen(o => !o)}
+                                style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-2)', color: 'var(--text-2)', cursor: 'pointer', lineHeight: 1.6 }}
+                              >
+                                {floodRange} ▾
+                              </button>
+                              {floodRangeOpen && (
+                                <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6, zIndex: 999, minWidth: 90, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                                  {['1day', '3days', '7days', '30days'].map(r => (
+                                    <div
+                                      key={r}
+                                      onClick={() => { setFloodRange(r); setFloodRangeOpen(false); }}
+                                      style={{ padding: '6px 12px', fontSize: 11, cursor: 'pointer', color: r === floodRange ? 'var(--accent)' : 'var(--text-1)', fontWeight: r === floodRange ? 700 : 400, whiteSpace: 'nowrap' }}
+                                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-2)'}
+                                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                    >
+                                      {r === '1day' ? '1 วัน' : r === '3days' ? '3 วัน' : r === '7days' ? '7 วัน' : '30 วัน'}
+                                      {r === floodRange && ' ✓'}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <div className={`toggle-sw ${v ? 'on' : ''}`} onClick={() => setToggles(p => ({ ...p, [k]: !p[k] }))} />
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>

@@ -698,10 +698,12 @@ app.get('/api/ai/briefing', async (_req, res) => {
 // GISTDA Open Data Flood proxy — api-gateway.gistda.or.th (real endpoint, confirmed from JS bundle)
 // pv_idn=57 = เชียงราย, auth via API-Key header
 // Returns GeoJSON FeatureCollection; features[] is empty when no active flooding (not an error)
-app.get('/api/gistda/flood', async (_req, res) => {
+app.get('/api/gistda/flood', async (req, res) => {
   try {
     const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
-    const url = 'https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/7days?pv_idn=57&limit=1000';
+    const VALID_RANGES = ['1day', '3days', '7days', '30days'];
+    const range = VALID_RANGES.includes(req.query.range) ? req.query.range : '7days';
+    const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/${range}?pv_idn=57&limit=1000`;
     const response = await fetch(url, { headers: { 'API-Key': dataKey } });
     if (!response.ok) throw new Error(`GISTDA API returned HTTP ${response.status}`);
     const data = await response.json();
