@@ -234,12 +234,41 @@ const computeHistoricalRisk = (_routePoints, freqFeatures) => {
 // wrapper ที่ยังใช้ชื่อ fetchFloodFreq เพื่อไม่ต้องแก้ call site เดิม
 const fetchFloodFreq = async () => ({});  // ไม่ใช้แล้ว → per-route ใน flood-routes endpoint
 
-// LDD baseline soil saturation risk per route — area-weighted from sr_cri shapefile
-// Represents inherent soil drainage class (not rainfall-dependent)
-const CR_SOIL_RISK = {
-  A: 0.548,  // เวียงชัย(g15) + บ้านจ้อง/หนองมด(g29 poorly-drained)
-  B: 0.493,  // เวียงชัย(g15) + เชียงใหม่(g38) + หางดง(g5)
-  C: 0.420,  // พาน+หางดง(g5 well-drained upland) dominant
+// LDD soil polygons — loaded from data/soil_polygons.json (pre-processed once by export_soil_polygons.py)
+// Each entry: { risk, bbox:[minLon,minLat,maxLon,maxLat], coords:[[lon,lat],...] }
+let SOIL_POLYGONS = [];
+try {
+  const soilJson = JSON.parse(fs.readFileSync(path.resolve('data/soil_polygons.json'), 'utf8'));
+  SOIL_POLYGONS = (soilJson.polygons ?? []).map(p => ({
+    risk: p.risk,
+    bbox: p.bbox,
+    ring: p.coords,  // keep as [[lon, lat], ...] — matches pipRing's GeoJSON format
+  }));
+  console.log(`🌱 Soil polygons loaded: ${SOIL_POLYGONS.length} rings (LDD จ.เชียงราย)`);
+} catch {
+  console.warn('⚠ data/soil_polygons.json not found — f_soil will use fallback 0.50');
+}
+
+// Point-sample route → average soil risk using PiP with bbox pre-filter
+const computeRouteSoilRisk = (routePoints) => {
+  if (!SOIL_POLYGONS.length) return null;
+  // Sample every Nth point to keep latency low (route A has 509 pts → sample 52)
+  const step = Math.max(1, Math.floor(routePoints.length / 50));
+  const sampled = routePoints.filter((_, i) => i % step === 0);
+  const risks = [];
+  for (const pt of sampled) {
+    const candidates = SOIL_POLYGONS.filter(p =>
+      pt.lon >= p.bbox[0] && pt.lon <= p.bbox[2] &&
+      pt.lat >= p.bbox[1] && pt.lat <= p.bbox[3]
+    );
+    for (const poly of candidates) {
+      if (pipRing(pt.lat, pt.lon, poly.ring)) {
+        risks.push(poly.risk);
+        break;
+      }
+    }
+  }
+  return risks.length ? +(risks.reduce((a, b) => a + b, 0) / risks.length).toFixed(3) : null;
 };
 
 // Representative midpoint coordinates for Open-Meteo 72h rainfall query per route
@@ -338,7 +367,7 @@ const fetchGistdaCurrentFlood = async () => {
   }
 };
 
-const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, rain72h = null, floodFreq = null) => {
+const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, rain72h = null, floodFreq = null, soilBase = null) => {
   // FloodExposure (0.45): สัดส่วนเส้นทางที่ผ่านพื้นที่น้ำท่วม GISTDA polygon จริง
   const f_flood_depth = floodExposure ?? 0.30;
 
@@ -349,8 +378,8 @@ const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, r
   const f_historical = floodFreq
     ?? (CR_HISTORICAL_INCIDENTS[ROUTE_DISTRICT[routeId]] ?? 0.60);
 
-  // SoilRisk (0.10): LDD soil type (40%) + Open-Meteo 72h rainfall saturation (60%)
-  const lddBase   = CR_SOIL_RISK[routeId] ?? 0.50;
+  // SoilRisk (0.10): LDD PiP soil base (40%) + Open-Meteo 72h rainfall saturation (60%)
+  const lddBase   = soilBase ?? 0.50;
   const rainSat   = rain72h != null ? Math.min(rain72h / RAIN72H_SAT_MM, 1.0) : lddBase;
   const f_soil    = +(lddBase * 0.4 + rainSat * 0.6).toFixed(3);
 
@@ -897,9 +926,10 @@ app.get('/api/flood-routes', async (_req, res) => {
         const points = coords.map(([lon, lat]) => ({ lat, lon }));
         const exposure   = routeFloodExposure(points, gistdaFeatures);
         const historical = computeHistoricalRisk(points, freqFeatMap[id]);
+        const soilBase   = computeRouteSoilRisk(points);
         const ml = predictRouteRisk(id, weather, exposure,
           damLevels.length ? damLevels : null,
-          traffic, rain72hMap[id] ?? null, historical);
+          traffic, rain72hMap[id] ?? null, historical, soilBase);
         result[id] = {
           name:         feat.properties.name,
           distance_km:  feat.properties.distance_km,
@@ -918,9 +948,10 @@ app.get('/api/flood-routes', async (_req, res) => {
         const points     = geo.coords.map(([lon, lat]) => ({ lat, lon }));
         const exposure   = routeFloodExposure(points, gistdaFeatures);
         const historical = computeHistoricalRisk(points, freqFeatMap[id]);
+        const soilBase   = computeRouteSoilRisk(points);
         const ml = predictRouteRisk(id, weather, exposure,
           damLevels.length ? damLevels : null,
-          traffic, rain72hMap[id] ?? null, historical);
+          traffic, rain72hMap[id] ?? null, historical, soilBase);
         result[id] = {
           name:         geo.name,
           distance_km:  geo.distance_km,

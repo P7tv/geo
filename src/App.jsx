@@ -31,8 +31,7 @@ const ROUTES_BASE = [
 
 const TOGGLE_LABELS = {
   flood: 'น้ำท่วม', wind: 'ลม', history: 'ประวัติ',
-  cloud: 'เมฆ', satellite: 'ดาวเทียม', sarMask: 'SAR', vehicles: 'ยานพาหนะ',
-  histFreq: 'ความถี่น้ำท่วม',
+  vehicles: 'ยานพาหนะ', histFreq: 'ความถี่น้ำท่วม',
 };
 
 const CONGESTION_CONFIG = {
@@ -145,7 +144,7 @@ const SHELTER_ICONS = {
 const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, floodRange, histFreqRange }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
-  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], sarPolygons: [], trafficMarkers: [], riskCircles: [], rainAreas: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null });
+  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null });
   const [loading, setLoading] = useState(true);
   const [mapError, setMapError] = useState(false);
 
@@ -309,71 +308,6 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     });
   }, [incidents, toggles.history]);
 
-  useEffect(() => {
-    if (!mapInstance.current || !window.sphere) return;
-    layersRef.current.sarPolygons.forEach(p => mapInstance.current.Overlays.remove(p));
-    layersRef.current.sarPolygons = [];
-    if (!toggles.sarMask) return;
-
-    fetch('http://localhost:3001/api/sar/flood')
-      .then(r => r.ok ? r.json() : null)
-      .then(geojson => {
-        if (!geojson?.features) return;
-        geojson.features.forEach(feat => {
-          const ring = feat.geometry?.coordinates?.[0];
-          if (!ring) return;
-          const pts = ring.map(([lon, lat]) => ({ lon, lat }));
-          const severity = feat.properties?.severity ?? 0.7;
-          const alpha = 0.1 + severity * 0.15;
-          const poly = new window.sphere.Polygon(pts, {
-            lineColor: `rgba(59,130,246,${(alpha * 3).toFixed(2)})`,
-            fillColor: `rgba(59,130,246,${alpha.toFixed(2)})`,
-          });
-          mapInstance.current.Overlays.add(poly);
-          layersRef.current.sarPolygons.push(poly);
-        });
-      })
-      .catch(() => {});
-  }, [toggles.sarMask]);
-
-  useEffect(() => {
-    if (!mapInstance.current || !window.sphere) return;
-    layersRef.current.rainAreas.forEach(p => mapInstance.current.Overlays.remove(p));
-    layersRef.current.rainAreas = [];
-
-    // Render rain coverage area polygons when toggles.cloud is enabled
-    if (toggles.cloud) {
-      WEATHER_STATIONS.forEach(st => {
-        const d = stationData[st.id];
-        if (d && d.rain > 0) {
-          // Draw a gorgeous rain cloud coverage diamond polygon over the rainy area
-          const radiusScale = Math.max(0.02, d.rain * 0.007); // dynamic cloud size
-          const pts = [
-            { lon: st.lon, lat: st.lat + radiusScale },
-            { lon: st.lon + radiusScale * 1.2, lat: st.lat },
-            { lon: st.lon, lat: st.lat - radiusScale },
-            { lon: st.lon - radiusScale * 1.2, lat: st.lat },
-            { lon: st.lon, lat: st.lat + radiusScale } // close
-          ];
-
-          const fillColor = d.rain > 10
-            ? 'rgba(239, 68, 68, 0.08)' // heavy: red cloud cell
-            : d.rain > 4
-              ? 'rgba(245, 158, 11, 0.07)'  // moderate: amber cloud cell
-              : 'rgba(59, 130, 246, 0.05)'; // light: blue cloud cell
-          const lineColor = d.rain > 10
-            ? 'rgba(239, 68, 68, 0.35)'
-            : d.rain > 4
-              ? 'rgba(245, 158, 11, 0.3)'
-              : 'rgba(59, 130, 246, 0.25)';
-
-          const poly = new window.sphere.Polygon(pts, { lineColor, fillColor });
-          mapInstance.current.Overlays.add(poly);
-          layersRef.current.rainAreas.push(poly);
-        }
-      });
-    }
-  }, [stationData, toggles.cloud]);
 
   // GISTDA flood-freq WMS layer — switches based on histFreqRange
   useEffect(() => {
@@ -464,7 +398,7 @@ export default function App() {
   const [stationData, setStationData] = useState({});
   const [routePaths, setRoutePaths] = useState({});
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
-  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, cloud: true, satellite: true, sarMask: true, vehicles: true, histFreq: false });
+  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false });
   const [floodRange, setFloodRange] = useState('7days');
   const [floodRangeOpen, setFloodRangeOpen] = useState(false);
   const [histFreqRange, setHistFreqRange] = useState('freq');
