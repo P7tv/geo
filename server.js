@@ -768,49 +768,6 @@ app.get('/api/gistda/flood', async (req, res) => {
   }
 });
 
-// ── SAR flood GeoJSON — static pre-processed Chiang Rai flood polygons ────────
-// Source: CEMS/GISTDA Sentinel-1A IW GRD VV+VH analysis (2024 flood season)
-app.get('/api/sar/flood', (_req, res) => {
-  const geojson = {
-    type: 'FeatureCollection',
-    metadata: { source: 'Sentinel-1A SAR (IW GRD)', province: 'เชียงราย', updated: '2024-09-15' },
-    features: [
-      {
-        type: 'Feature',
-        properties: { district: 'แม่สาย', depth_m: 2.1, area_km2: 4.8, severity: 0.92 },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[[99.860,20.420],[99.900,20.420],[99.910,20.445],[99.875,20.450],[99.855,20.435],[99.860,20.420]]],
-        },
-      },
-      {
-        type: 'Feature',
-        properties: { district: 'เวียงป่าเป้า', depth_m: 1.8, area_km2: 3.2, severity: 0.88 },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[[99.840,19.360],[99.875,19.360],[99.880,19.390],[99.845,19.395],[99.835,19.375],[99.840,19.360]]],
-        },
-      },
-      {
-        type: 'Feature',
-        properties: { district: 'เมืองเชียงราย', depth_m: 0.9, area_km2: 1.5, severity: 0.60 },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[[99.820,19.895],[99.850,19.895],[99.855,19.920],[99.825,19.922],[99.815,19.908],[99.820,19.895]]],
-        },
-      },
-      {
-        type: 'Feature',
-        properties: { district: 'เทิง', depth_m: 1.2, area_km2: 2.1, severity: 0.65 },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[[100.055,19.965],[100.090,19.965],[100.095,19.988],[100.060,19.992],[100.050,19.975],[100.055,19.965]]],
-        },
-      },
-    ],
-  };
-  res.json(geojson);
-});
 
 // ── XAI route explanation — Typhoon explains risk factors in Thai ──────────────
 app.post('/api/explain', async (req, res) => {
@@ -1001,7 +958,6 @@ app.listen(PORT, () => {
   console.log(`\n🚀 FloodNav server on http://localhost:${PORT} — จังหวัดเชียงราย`);
   console.log(`📡 TMD proxy:    /api/tmd/forecast`);
   console.log(`📡 CCTV traffic: /api/vehicles/route-summary`);
-  console.log(`📡 SAR flood:    /api/sar/flood`);
   console.log(`🗺️  A* routes:    /api/flood-routes`);
   console.log(`📊 Flood freq:   /api/gistda/flood-freq-values`);
   console.log(`🌀 AI chat:      /api/ai/chat`);

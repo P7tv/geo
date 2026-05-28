@@ -443,7 +443,7 @@ export default function App() {
   const addLog = (routeName, warn = false, customReason = null, officerOverride = null) => {
     const t = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
     const reasons = [
-      'ดึงข้อมูลดาวเทียม Sentinel-1A ตรวจประเมินพื้นที่แห้งสำเร็จ',
+      'ดึงข้อมูลพื้นที่น้ำท่วมจาก GISTDA Flood API สำเร็จ',
       'ระดับน้ำกกต่ำกว่าเกณฑ์เตือนภัย ปลอดภัยในการปฏิบัติภารกิจ',
       'กรมอุตุนิยมวิทยา TMD ยืนยันกระแสฝนลดลงในเชียงราย',
     ];
@@ -652,7 +652,7 @@ export default function App() {
 
     setChatMessages([{
       role: 'ai',
-      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัย<strong>เชียงราย</strong><br/>ครอบคลุม 4 อำเภอ: เมือง · แม่สาย · เทิง · เวียงป่าเป้า<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA sphere · TMD · NetworkX A* · Supabase CCTV · Sentinel-1A SAR</span>',
+      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัย<strong>เชียงราย</strong><br/>ครอบคลุม 4 อำเภอ: เมือง · แม่สาย · เทิง · เวียงป่าเป้า<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA Flood WMS/API · TMD NWP · NetworkX A* · Supabase CCTV · Open-Meteo</span>',
       time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
     }]);
 
@@ -1280,7 +1280,7 @@ export default function App() {
             <div className="gov-page-header">
               <div className="gov-page-title">
                 <h2>วิเคราะห์สารสนเทศภูมิศาสตร์และข้อมูลดาวเทียม (Geospatial & Satellite Analysis)</h2>
-                <p>รายงานข้อมูลจุดเสี่ยงน้ำท่วมจังหวัดเชียงราย (4 อำเภอ) จากระบบดาวเทียม Sentinel-1A SAR และ GISTDA Open Data</p>
+                <p>รายงานข้อมูลจุดเสี่ยงน้ำท่วมจังหวัดเชียงราย (4 อำเภอ) จาก GISTDA Flood Monitoring Layer (WMS + Open Data API)</p>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <input
@@ -1359,7 +1359,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* SAR & Radar side */}
+              {/* GISTDA Flood Monitoring side */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto', maxHeight: '100%', paddingRight: '4px' }}>
                 
                 {/* TMD Rain Radar Card */}
@@ -1427,73 +1427,74 @@ export default function App() {
 
                 <div className="gov-card">
                   <div className="gov-card-header">
-                    <h3>สถานะ Sentinel-1A SAR Telemetry</h3>
+                    <h3>GISTDA Flood Monitoring Layer</h3>
+                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px' }}>● CONNECTED</span>
                   </div>
                   <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '11px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Radar Mode:</span>
-                      <strong>Interferometric Wide (IW)</strong>
+                      <span style={{ color: 'var(--text-3)' }}>Active Range:</span>
+                      <strong style={{ color: 'var(--accent)' }}>{floodRange === '1day' ? '1 วัน' : floodRange === '3days' ? '3 วัน' : floodRange === '7days' ? '7 วัน' : '30 วัน'}</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Polarisation:</span>
-                      <strong>VV + VH Dual-Pol</strong>
+                      <span style={{ color: 'var(--text-3)' }}>WMS Endpoint:</span>
+                      <strong style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>/maps/flood/{floodRange}/wms</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Spatial Resolution:</span>
-                      <strong>20m x 20m pixel spacing</strong>
+                      <span style={{ color: 'var(--text-3)' }}>Vector API:</span>
+                      <strong style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>/features/flood/7days</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Processing Level:</span>
-                      <strong>L1 GRD (Ground Range)</strong>
+                      <span style={{ color: 'var(--text-3)' }}>Source:</span>
+                      <strong>GISTDA Open Data API</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Scan Active:</span>
-                      <strong style={{ color: 'var(--safe)' }}>● ACTIVE SCANNING</strong>
+                      <span style={{ color: 'var(--text-3)' }}>Last Fetched:</span>
+                      <strong>{new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</strong>
                     </div>
                   </div>
                 </div>
 
                 <div className="gov-card">
                   <div className="gov-card-header">
-                    <h3>วิเคราะห์พื้นที่รับน้ำท่วมขัง (SAR Mask)</h3>
+                    <h3>สถิติพื้นที่น้ำท่วม (GISTDA /features/flood/7days)</h3>
                   </div>
                   <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px' }}>
-                        <span>พื้นที่เสี่ยงน้ำท่วมสะสม (ตาราง กม.)</span>
-                        <strong style={{ fontFamily: 'var(--font-mono)' }}>184.2 km²</strong>
+                        <span>จำนวน polygon น้ำท่วมที่ตรวจพบ</span>
+                        <strong style={{ fontFamily: 'var(--font-mono)' }}>{gistdaRiskPoints.length} จุด</strong>
                       </div>
                       <div style={{ height: '6px', background: 'var(--bg-panel-alt)', borderRadius: '3px', overflow: 'hidden' }}>
-                        <div style={{ width: '64%', height: '100%', background: 'var(--danger)' }} />
+                        <div style={{ width: `${Math.min(gistdaRiskPoints.length / 2, 100)}%`, height: '100%', background: gistdaRiskPoints.length > 100 ? 'var(--danger)' : gistdaRiskPoints.length > 30 ? 'var(--warn)' : 'var(--safe)' }} />
                       </div>
                     </div>
 
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px' }}>
-                        <span>พื้นที่เกษตรกรรมได้รับผลกระทบ</span>
-                        <strong style={{ fontFamily: 'var(--font-mono)' }}>4,821 ไร่</strong>
+                        <span>ระดับวิกฤต (severity &gt; 0.75)</span>
+                        <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--danger)' }}>
+                          {gistdaRiskPoints.filter(p => p.severity > 0.75).length} จุด
+                        </strong>
                       </div>
                       <div style={{ height: '6px', background: 'var(--bg-panel-alt)', borderRadius: '3px', overflow: 'hidden' }}>
-                        <div style={{ width: '48%', height: '100%', background: 'var(--warn)' }} />
+                        <div style={{ width: gistdaRiskPoints.length ? `${(gistdaRiskPoints.filter(p => p.severity > 0.75).length / gistdaRiskPoints.length) * 100}%` : '0%', height: '100%', background: 'var(--danger)' }} />
                       </div>
                     </div>
 
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px' }}>
-                        <span>พื้นที่ชุมชน/สิ่งปลูกสร้างเสี่ยง</span>
-                        <strong style={{ fontFamily: 'var(--font-mono)' }}>12 เขตเทศบาล</strong>
+                        <span>เฝ้าระวัง (severity 0.5–0.75)</span>
+                        <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--warn)' }}>
+                          {gistdaRiskPoints.filter(p => p.severity > 0.5 && p.severity <= 0.75).length} จุด
+                        </strong>
                       </div>
                       <div style={{ height: '6px', background: 'var(--bg-panel-alt)', borderRadius: '3px', overflow: 'hidden' }}>
-                        <div style={{ width: '30%', height: '100%', background: 'var(--blue-primary)' }} />
+                        <div style={{ width: gistdaRiskPoints.length ? `${(gistdaRiskPoints.filter(p => p.severity > 0.5 && p.severity <= 0.75).length / gistdaRiskPoints.length) * 100}%` : '0%', height: '100%', background: 'var(--warn)' }} />
                       </div>
                     </div>
 
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.01)', border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius)', padding: '16px', textAlign: 'center' }}>
-                      <div>
-                        <span style={{ fontSize: '24px' }}>📡</span>
-                        <h4 style={{ fontSize: '11px', fontWeight: '700', marginTop: '8px', color: 'var(--text-1)' }}>เชื่อมโยงสถานีดาวเทียม GISTDA</h4>
-                        <p style={{ fontSize: '9px', color: 'var(--text-3)', marginTop: '4px', maxWidth: '200px' }}>การดึงข้อมูล SAR polygon overlay มีการอัปเดตทุก 24 ชั่วโมงตามรอบวงโคจรผ่านพิกัดประเทศไทย</p>
-                      </div>
+                    <div style={{ fontSize: '10px', color: 'var(--text-3)', textAlign: 'center', padding: '8px', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                      ข้อมูลจาก GISTDA Open Data API · อัปเดตทุก 15 นาที · จ.เชียงราย (pv_idn=57)
                     </div>
                   </div>
                 </div>
