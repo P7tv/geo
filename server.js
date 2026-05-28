@@ -201,7 +201,7 @@ const fetchFloodFreqFeatures = async (routeId) => {
     return floodFreqFeatCache[routeId];
   }
   try {
-    const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    const dataKey = process.env.VITE_GISTDA_DATA_KEY;
     const bbox = ROUTE_BBOX[routeId].join(',');
     const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood-freq` +
       `?bbox=${bbox}&pv_idn=57&limit=1000`;
@@ -369,7 +369,7 @@ const fetchGistdaCurrentFlood = async () => {
     return gistdaFloodCache.data;
   }
   try {
-    const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    const dataKey = process.env.VITE_GISTDA_DATA_KEY;
     const url = 'https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/7days?pv_idn=57&limit=1000';
     const r = await fetchWithTimeout(url, { headers: { 'API-Key': dataKey } }, 10000);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -751,7 +751,7 @@ app.get('/api/ai/briefing', async (_req, res) => {
 // Returns GeoJSON FeatureCollection; features[] is empty when no active flooding (not an error)
 app.get('/api/gistda/flood', async (req, res) => {
   try {
-    const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    const dataKey = process.env.VITE_GISTDA_DATA_KEY;
     const VALID_RANGES = ['1day', '3days', '7days', '30days'];
     const range = VALID_RANGES.includes(req.query.range) ? req.query.range : '7days';
     const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/${range}?pv_idn=57&limit=1000`;
@@ -967,6 +967,217 @@ app.get('/api/flood-routes', async (_req, res) => {
   } catch (err) {
     console.error('flood-routes error:', err.message);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Dynamic routes ────────────────────────────────────────────────────────────
+
+const haversineM = (lat1, lon1, lat2, lon2) => {
+  const R = 6_371_000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+};
+
+const dynFreqCache = new Map();
+const DYN_FREQ_TTL = 60 * 60_000;
+
+const fetchFloodFreqForBbox = async (bbox) => {
+  const key = bbox.map(v => v.toFixed(4)).join(',');
+  const cached = dynFreqCache.get(key);
+  if (cached && Date.now() - cached.ts < DYN_FREQ_TTL) return cached.data;
+  try {
+    const dataKey = process.env.VITE_GISTDA_DATA_KEY;
+    const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood-freq` +
+      `?bbox=${bbox.join(',')}&pv_idn=57&limit=1000`;
+    const r = await fetchWithTimeout(url, { headers: { 'API-Key': dataKey } }, 12000);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    const data = j.features ?? [];
+    dynFreqCache.set(key, { data, ts: Date.now() });
+    return data;
+  } catch (e) {
+    console.warn('fetchFloodFreqForBbox:', e.message);
+    return [];
+  }
+};
+
+// Compute blocked-point detail fields for one route
+function blockedDetails(points, blockedPoints) {
+  if (!blockedPoints?.length || !points?.length) {
+    return { blocked: false, closureStatus: 'clear', blockedExposure: 0, blockedPenalty: 0, blockedDistanceM: null, nearestBlockedPoint: null };
+  }
+  let minDist = Infinity;
+  let minBp   = null;
+  let hitCount = 0;
+  for (const pt of points) {
+    for (const bp of blockedPoints) {
+      const d = haversineM(pt.lat, pt.lon, bp.lat, bp.lon);
+      if (d < minDist) { minDist = d; minBp = bp; }
+      if (d <= (bp.radiusM ?? 500)) hitCount++;
+    }
+  }
+  const blocked = hitCount > 0;
+  return {
+    blocked,
+    closureStatus:       blocked ? 'penalized' : 'clear',
+    blockedExposure:     +(hitCount / points.length).toFixed(3),
+    blockedPenalty:      blocked ? 25 : 0,
+    blockedDistanceM:    minDist !== Infinity ? Math.round(minDist) : null,
+    nearestBlockedPoint: minBp ? { lat: minBp.lat, lon: minBp.lon, radiusM: minBp.radiusM ?? 500 } : null,
+  };
+}
+
+// Score precomputed A/B/C routes and return as dynamic-route shape (OSRM failure fallback)
+async function buildFixedFallbackRoutes(weather, gistdaFeatures, rain72hMap, damLevels, rain72hAvg) {
+  const [freqFeatA, freqFeatB, freqFeatC] = await Promise.all(
+    ['A', 'B', 'C'].map(fetchFloodFreqFeatures)
+  );
+  const freqFeatMap = { A: freqFeatA, B: freqFeatB, C: freqFeatC };
+  const routes = [];
+  for (const id of ['A', 'B', 'C']) {
+    let points, name, distanceKm;
+    if (floodRoutesGeoJSON) {
+      const feat = floodRoutesGeoJSON.features.find(f => f.properties.route_id === id);
+      if (!feat) continue;
+      points = feat.geometry.coordinates.map(([lon, lat]) => ({ lat, lon }));
+      name = feat.properties.name;
+      distanceKm = feat.properties.distance_km;
+    } else {
+      const geo = FLOOD_ROUTE_GEOMETRY[id];
+      points = geo.coords.map(([lon, lat]) => ({ lat, lon }));
+      name = geo.name;
+      distanceKm = geo.distance_km;
+    }
+    const exposure   = routeFloodExposure(points, gistdaFeatures);
+    const historical = computeHistoricalRisk(points, freqFeatMap[id]);
+    const soilBase   = computeRouteSoilRisk(points);
+    const ml = predictRouteRisk(id, weather, exposure, damLevels.length ? damLevels : null, null,
+      rain72hMap[id] ?? rain72hAvg, historical, soilBase);
+    routes.push({
+      id, name,
+      distanceKm,
+      durationMin: Math.round(distanceKm / 45 * 60),
+      risk:    ml.risk,
+      safety:  100 - ml.risk,
+      blocked: false, closureStatus: 'clear', blockedExposure: 0, blockedPenalty: 0, blockedDistanceM: null, nearestBlockedPoint: null,
+      features: ml.features,
+      geometry: { type: 'LineString', coordinates: points.map(p => [p.lon, p.lat]) },
+      points,
+    });
+  }
+  return routes.sort((a, b) => a.risk - b.risk);
+}
+
+app.post('/api/dynamic-routes', async (req, res) => {
+  try {
+    const { start, end, blockedPoints = [], routeCount = 3 } = req.body ?? {};
+    if (!start?.lat || !start?.lon || !end?.lat || !end?.lon) {
+      return res.status(400).json({ error: 'start and end coordinates are required' });
+    }
+
+    const ROUTING_ENGINE = 'OSRM public API (router.project-osrm.org)';
+    const LIMITATIONS    = 'Blocked points are applied as post-route risk penalties, not graph-level edge removals. Route geometry may still pass through blocked zones.';
+
+    // Fetch OSRM and all live data in parallel to minimise latency
+    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?alternatives=true&geometries=geojson&overview=full&steps=false`;
+    const [osrmResult, weather, gistdaFeatures, rain72hMap, damResults] = await Promise.all([
+      fetchWithTimeout(osrmUrl, {}, 15000).then(r => r.json()).catch(() => null),
+      fetchLiveWeather(),
+      fetchGistdaCurrentFlood(),
+      fetchRain72h(),
+      Promise.allSettled(DAM_META.map(fetchDamLevel)),
+    ]);
+
+    const damLevels = damResults
+      .filter(r => r.status === 'fulfilled' && r.value?.percent != null)
+      .map(r => r.value);
+    const rain72hValues = Object.values(rain72hMap ?? {}).filter(v => typeof v === 'number');
+    const rain72hAvg = rain72hValues.length ? rain72hValues.reduce((a, b) => a + b, 0) / rain72hValues.length : null;
+
+    const buildDataStatus = (roadGraph) => ({
+      roadGraph,
+      gistdaFlood: gistdaFloodCache.lastStatus,
+      tmdForecast: weather ? 'live' : 'offline',
+      floodFreq:   floodFreqFeatCache.lastStatus,
+      lddSoil:     SOIL_POLYGONS.length > 0 ? 'local' : 'fallback',
+      rain72h:     rain72hCache.lastStatus,
+    });
+
+    // OSRM failed → serve pre-scored fixed routes as transparent fallback
+    if (!osrmResult || osrmResult.code !== 'Ok') {
+      const reason = osrmResult ? (osrmResult.message ?? 'OSRM routing failed') : 'OSRM request timed out';
+      console.warn('[dynamic-routes] OSRM unavailable:', reason, '— serving fixed-route fallback');
+      const fixedRoutes = await buildFixedFallbackRoutes(weather, gistdaFeatures, rain72hMap, damLevels, rain72hAvg);
+      return res.json({
+        routes: fixedRoutes,
+        _meta: {
+          mode: 'fixed-fallback',
+          fallback: true,
+          fallbackReason: reason,
+          routingEngine: 'Precomputed routes (OSRM unavailable)',
+          limitations:   LIMITATIONS,
+          requestedCount: routeCount,
+          returnedCount:  fixedRoutes.length,
+          dataStatus: buildDataStatus('offline'),
+        },
+      });
+    }
+
+    // Filter routes missing geometry before scoring (guards against malformed OSRM response)
+    const osrmRoutes = osrmResult.routes
+      .filter(r => r.geometry?.coordinates?.length >= 2)
+      .slice(0, Math.max(routeCount, 3));
+    const scored = await Promise.all(osrmRoutes.map(async (r, i) => {
+      const coords = r.geometry.coordinates;
+      const points = coords.map(([lon, lat]) => ({ lat, lon }));
+      const bbox   = [
+        Math.min(...coords.map(c => c[0])), Math.min(...coords.map(c => c[1])),
+        Math.max(...coords.map(c => c[0])), Math.max(...coords.map(c => c[1])),
+      ];
+      const [freqFeats] = await Promise.all([fetchFloodFreqForBbox(bbox)]);
+      const exposure   = routeFloodExposure(points, gistdaFeatures);
+      const historical = computeHistoricalRisk(points, freqFeats);
+      const soilBase   = computeRouteSoilRisk(points);
+      const ml = predictRouteRisk('DYN' + i, weather, exposure, damLevels.length ? damLevels : null, null, rain72hAvg, historical, soilBase);
+      const closure = blockedDetails(points, blockedPoints);
+      return {
+        id: 'DYN' + i, name: 'Route ' + (i + 1),
+        distanceKm:  +(r.distance / 1000).toFixed(2),
+        durationMin: +(r.duration / 60).toFixed(1),
+        risk:   Math.min(ml.risk + closure.blockedPenalty, 99),
+        safety: Math.max(100 - ml.risk - closure.blockedPenalty, 1),
+        features: ml.features,
+        geometry: r.geometry,
+        points,
+        ...closure,
+      };
+    }));
+
+    const scoredRoutes = scored
+      .sort((a, b) => a.risk - b.risk)
+      .map((route, idx) => ({ ...route, id: 'R' + (idx + 1), name: 'Route ' + (idx + 1) }))
+      .slice(0, routeCount);
+
+    const allRoutesAffected = scoredRoutes.length > 0 && scoredRoutes.every(r => r.blocked);
+
+    res.json({
+      routes: scoredRoutes,
+      _meta: {
+        mode:             'dynamic',
+        routingEngine:    ROUTING_ENGINE,
+        limitations:      LIMITATIONS,
+        requestedCount:   routeCount,
+        returnedCount:    scoredRoutes.length,
+        allRoutesAffected: allRoutesAffected || undefined,
+        dataStatus: buildDataStatus('live'),
+      },
+    });
+  } catch (err) {
+    console.error('dynamic-routes error:', err.message);
+    res.status(500).json({ error: err.message, fallback: true });
   }
 });
 

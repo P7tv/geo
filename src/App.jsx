@@ -31,7 +31,7 @@ const ROUTES_BASE = [
 
 const TOGGLE_LABELS = {
   flood: 'น้ำท่วม', wind: 'อากาศและฝน', history: 'รายงานเหตุการณ์',
-  vehicles: 'จราจรและยานพาหนะ', histFreq: 'ความถี่น้ำท่วม',
+  vehicles: 'จราจรและยานพาหนะ', histFreq: 'ความถี่น้ำท่วม', emergencyPOI: 'Emergency POI',
 };
 
 const CONGESTION_CONFIG = {
@@ -141,12 +141,18 @@ const SHELTER_ICONS = {
   assembly_point:{ emoji: '👥', color: 'rgba(245,158,11,0.8)' },
 };
 
-const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, floodRange, histFreqRange }) => {
+const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
-  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null });
+  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null, dynLines: [], dynMarkers: [] });
+  const clickModeRef   = useRef(clickMode);
+  const onMapClickRef  = useRef(onMapClick);
   const [loading, setLoading] = useState(true);
   const [mapError, setMapError] = useState(false);
+
+  // Keep both refs in sync — click handler closure reads from refs, not props directly
+  useEffect(() => { clickModeRef.current  = clickMode;  }, [clickMode]);
+  useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
 
   useEffect(() => {
     let attempts = 0;
@@ -162,6 +168,17 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
             center: { lon: 99.832, lat: 19.908 },
             zoom: 11,
           });
+          // Wire map click → dynamic routing point capture (use refs so handler is never stale)
+          mapInstance.current.Event.bind('click', (e) => {
+            if (!clickModeRef.current) return;
+            // GISTDA SDK click event: try multiple property shapes
+            const lat = e?.location?.lat ?? e?.lat ?? (Array.isArray(e?.coordinate) ? e.coordinate[1] : null);
+            const lon = e?.location?.lon ?? e?.lon ?? (Array.isArray(e?.coordinate) ? e.coordinate[0] : null);
+            console.log('[MAP CLICK]', clickModeRef.current, lat, lon);
+            if (lat != null && lon != null && onMapClickRef.current) {
+              onMapClickRef.current({ lat: +lat.toFixed(6), lon: +lon.toFixed(6) });
+            }
+          });
         } catch (err) {
           console.error("❌ Map initialization failed:", err);
           setMapError(true);
@@ -173,7 +190,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       }
     }, 100);
     return () => clearInterval(t);
-  }, []);
+  }, []); // empty deps — map binds once; refs handle dynamic state
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -353,14 +370,17 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     layersRef.current.floodWmsLayer = layer;
   }, [toggles.flood, floodRange]);
 
-  // Emergency facilities from OSM
+  // Emergency facilities from OSM — toggled via emergencyPOI, max 30 markers
   useEffect(() => {
-    if (!mapInstance.current || !window.sphere || !shelters?.length) return;
+    if (!mapInstance.current || !window.sphere) return;
     layersRef.current.shelterMarkers.forEach(m => mapInstance.current.Overlays.remove(m));
     layersRef.current.shelterMarkers = [];
-    shelters.forEach(s => {
+    if (!toggles.emergencyPOI || !shelters?.length) return;
+    // Limit markers to avoid click-blocking and visual clutter
+    shelters.slice(0, 30).forEach(s => {
       const icon = SHELTER_ICONS[s.type] ?? SHELTER_ICONS.shelter;
-      const html = `<div class="facility-marker"><span>${icon.emoji}</span><span>${s.name.slice(0, 20)}</span></div>`;
+      // pointer-events:none on label so map click passes through the text layer
+      const html = `<div class="facility-marker" style="pointer-events:none"><span>${icon.emoji}</span><span>${s.name.slice(0, 20)}</span></div>`;
       const marker = new window.sphere.Marker(
         { lon: s.lon, lat: s.lat },
         { title: s.name, detail: s.type, icon: { html } }
@@ -368,7 +388,46 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       mapInstance.current.Overlays.add(marker);
       layersRef.current.shelterMarkers.push(marker);
     });
-  }, [shelters]);
+  }, [shelters, toggles.emergencyPOI]);
+
+  // Dynamic route polylines
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    layersRef.current.dynLines.forEach(l => mapInstance.current.Overlays.remove(l));
+    layersRef.current.dynLines = [];
+    (dynRoutes ?? []).forEach((route, i) => {
+      if (!route.geometry?.coordinates?.length) return;
+      const pts = route.geometry.coordinates.map(([lon, lat]) => ({ lon, lat }));
+      const isActive = route.id === dynActiveRoute;
+      const riskHex = route.risk >= 70 ? '#ef4444' : route.risk >= 40 ? '#f59e0b' : '#22c55e';
+      const color = isActive ? riskHex : riskHex + '77';
+      const line = new window.sphere.Polyline(pts, { lineColor: color, lineWidth: isActive ? 7 : 3 });
+      mapInstance.current.Overlays.add(line);
+      layersRef.current.dynLines.push(line);
+    });
+  }, [dynRoutes, dynActiveRoute]);
+
+  // Start / End / Blocked markers
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    layersRef.current.dynMarkers.forEach(m => mapInstance.current.Overlays.remove(m));
+    layersRef.current.dynMarkers = [];
+    const add = (pos, html, title) => {
+      const m = new window.sphere.Marker(pos, { title, icon: { html } });
+      mapInstance.current.Overlays.add(m);
+      layersRef.current.dynMarkers.push(m);
+    };
+    if (dynStart) add({ lon: dynStart.lon, lat: dynStart.lat },
+      '<div style="width:28px;height:28px;border-radius:50%;background:#22c55e;border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.5)">S</div>', 'จุดเริ่มต้น');
+    if (dynEnd) add({ lon: dynEnd.lon, lat: dynEnd.lat },
+      '<div style="width:28px;height:28px;border-radius:50%;background:#ef4444;border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.5)">E</div>', 'ปลายทาง');
+    (dynBlocked ?? []).forEach((bp, idx) => {
+      add({ lon: bp.lon, lat: bp.lat },
+        '<div style="width:24px;height:24px;border-radius:50%;background:#f59e0b;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 2px 6px rgba(0,0,0,.4)">⛔</div>',
+        bp.reason ?? `จุดปิด ${idx + 1}`);
+      // radius circle intentionally omitted — marker only; radiusM still sent to backend for penalty calc
+    });
+  }, [dynStart, dynEnd, dynBlocked]);
 
   return (
     <div style={{ height: '100%', width: '100%', position: 'relative' }}>
@@ -377,6 +436,11 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
         <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(248,250,252,0.88)', zIndex: 1000, fontFamily: 'sans-serif', backdropFilter: 'blur(2px)' }}>
           <div className="sync-dot" style={{ marginBottom: 12 }} />
           <span style={{ fontSize: 13, color: '#475569', letterSpacing: '0.5px', fontFamily: 'var(--font-th)' }}>กำลังเชื่อมต่อ GISTDA Sphere Map...</span>
+        </div>
+      )}
+      {clickMode && (
+        <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 900, background: 'rgba(15,23,42,0.88)', color: '#fff', padding: '6px 16px', borderRadius: 20, fontSize: 11, fontWeight: 700, letterSpacing: '0.5px', pointerEvents: 'none', whiteSpace: 'nowrap' }}>
+          {clickMode === 'start' ? '📍 คลิกแผนที่เพื่อตั้งจุดเริ่มต้น' : clickMode === 'end' ? '🏁 คลิกแผนที่เพื่อตั้งปลายทาง' : '⛔ คลิกแผนที่เพื่อเพิ่มจุดปิดถนน'}
         </div>
       )}
       {mapError && (
@@ -399,8 +463,24 @@ export default function App() {
   const [routePaths, setRoutePaths] = useState({});
   const [routeDataStatus, setRouteDataStatus] = useState(null);  // _meta.dataStatus from /api/flood-routes
   const [routeSource, setRouteSource] = useState('live');         // 'live' | 'client-estimate'
+
+  // Dynamic routing state
+  const [routeMode, setRouteMode] = useState('dynamic');    // 'fixed' | 'dynamic'  — dynamic is primary
+  const [mapClickMode, setMapClickMode] = useState(null);   // null | 'start' | 'end' | 'blocked'
+  const [dynStart, setDynStart] = useState(null);
+  const [dynEnd, setDynEnd] = useState(null);
+  const [dynBlocked, setDynBlocked] = useState([]);
+  const [dynRoutes, setDynRoutes] = useState([]);
+  const [dynLoading, setDynLoading] = useState(false);
+  const [dynError, setDynError] = useState(null);
+  const [dynDataStatus, setDynDataStatus] = useState(null);
+  const [dynActiveRoute, setDynActiveRoute] = useState(null);
+  const [dynFallback, setDynFallback] = useState(false);
+  const [dynFallbackReason, setDynFallbackReason] = useState(null);
+  const [dynLimitations, setDynLimitations] = useState(null);
+  const [dynAllAffected, setDynAllAffected] = useState(false);
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
-  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false });
+  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false, emergencyPOI: false });
   const [floodRange, setFloodRange] = useState('7days');
   const [floodRangeOpen, setFloodRangeOpen] = useState(false);
   const [histFreqRange, setHistFreqRange] = useState('freq');
@@ -617,6 +697,56 @@ export default function App() {
         paths[id] = { points, distance: '—', duration: 0, risk, depth: Math.max(0.1, risk / 65).toFixed(1) };
       });
       setRoutePaths(paths);
+    }
+  };
+
+  const handleMapClick = ({ lat, lon }) => {
+    if (mapClickMode === 'start') {
+      setDynStart({ lat, lon });
+      setMapClickMode(null);
+    } else if (mapClickMode === 'end') {
+      setDynEnd({ lat, lon });
+      setMapClickMode(null);
+    } else if (mapClickMode === 'blocked') {
+      setDynBlocked(prev => [...prev, { lat, lon, radiusM: 500, reason: 'Road closure' }]);
+      // stay in blocked mode so user can add multiple points
+    }
+  };
+
+  const fetchDynamicRoutes = async () => {
+    if (!dynStart || !dynEnd) { addToast('กรุณาเลือกจุดเริ่มต้นและปลายทางก่อน', 'warn'); return; }
+    setDynLoading(true);
+    setDynError(null);
+    setDynRoutes([]);
+    setDynFallback(false);
+    setDynFallbackReason(null);
+    setDynLimitations(null);
+    setDynAllAffected(false);
+    try {
+      const res = await fetch('http://localhost:3001/api/dynamic-routes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: dynStart, end: dynEnd, blockedPoints: dynBlocked, avoidFlood: true, routeCount: 3 }),
+      });
+      const data = await res.json();
+      if (!res.ok && !data.routes?.length) throw new Error(data.error ?? 'Routing failed');
+      const meta = data._meta ?? {};
+      setDynRoutes(data.routes ?? []);
+      setDynDataStatus(meta.dataStatus ?? null);
+      setDynLimitations(meta.limitations ?? null);
+      setDynAllAffected(meta.allRoutesAffected === true);
+      if (meta.fallback) {
+        setDynFallback(true);
+        setDynFallbackReason(meta.fallbackReason ?? 'OSRM unavailable');
+      }
+      if (data.routes?.length) setDynActiveRoute(data.routes[0].id);
+      const count = data.routes?.length ?? 0;
+      addToast(`พบ ${count} เส้นทาง${meta.fallback ? ' (Precomputed Fallback)' : ''} — เรียงจากความเสี่ยงต่ำสุด`, meta.fallback ? 'warn' : 'success');
+    } catch (e) {
+      setDynError(e.message);
+      addToast(`Dynamic routing ล้มเหลว: ${e.message}`, 'warn');
+    } finally {
+      setDynLoading(false);
     }
   };
 
@@ -876,11 +1006,192 @@ export default function App() {
           <aside className="left-panel">
             <div className="left-panel-scroll">
 
-              {/* Route cards */}
-              <div className="panel-section">
+              {/* Route mode toggle */}
+              <div style={{ display: 'flex', gap: 0, marginBottom: 8, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                {[['fixed','Precomputed Routes'],['dynamic','Dynamic Routing']].map(([mode, label]) => (
+                  <button key={mode} onClick={() => setRouteMode(mode)} style={{ flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 700, cursor: 'pointer', border: 'none', background: routeMode === mode ? 'var(--blue-primary)' : 'var(--bg-panel-alt)', color: routeMode === mode ? '#fff' : 'var(--text-3)', letterSpacing: '0.3px' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Dynamic Routing Control Panel */}
+              {routeMode === 'dynamic' && (
+                <div className="panel-section" style={{ paddingBottom: 12 }}>
+                  <div className="section-header">
+                    <span className="section-title">Dynamic Routing</span>
+                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                      {dynFallback && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)55' }}>⚠ FALLBACK: PRECOMPUTED</span>
+                      )}
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(59,130,246,0.15)', color: 'var(--blue-primary)', border: '1px solid var(--blue-primary)55' }}>OSRM + ML</span>
+                    </div>
+                  </div>
+                  {dynFallback && dynFallbackReason && (
+                    <div style={{ marginBottom: 8, padding: '4px 8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, fontSize: 9, color: 'var(--warn)' }}>
+                      {dynFallbackReason} — แสดงเส้นทาง Precomputed แทน
+                    </div>
+                  )}
+
+                  {/* Start / End / Blocked controls */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+                    {[
+                      { key: 'start', label: '📍 จุดเริ่มต้น', mode: 'start', val: dynStart, color: '#22c55e' },
+                      { key: 'end',   label: '🏁 ปลายทาง',    mode: 'end',   val: dynEnd,   color: '#ef4444' },
+                    ].map(({ key, label, mode, val, color }) => (
+                      <div key={key} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <button
+                          onClick={() => setMapClickMode(prev => prev === mode ? null : mode)}
+                          style={{ flex: 1, padding: '4px 8px', fontSize: 10, fontWeight: 700, borderRadius: 4, cursor: 'pointer', border: `1px solid ${mapClickMode === mode ? color : 'var(--border)'}`, background: mapClickMode === mode ? `${color}22` : 'var(--bg-panel-alt)', color: mapClickMode === mode ? color : 'var(--text-2)' }}
+                        >{mapClickMode === mode ? '✓ คลิกแผนที่...' : label}</button>
+                        {val && <span style={{ fontSize: 9, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{val.lat.toFixed(3)}, {val.lon.toFixed(3)}</span>}
+                        {val && <button onClick={() => { if (key === 'start') setDynStart(null); else setDynEnd(null); }} style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 12, padding: 0 }}>✕</button>}
+                      </div>
+                    ))}
+
+                    {/* Blocked points */}
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <button
+                        onClick={() => setMapClickMode(prev => prev === 'blocked' ? null : 'blocked')}
+                        style={{ flex: 1, padding: '4px 8px', fontSize: 10, fontWeight: 700, borderRadius: 4, cursor: 'pointer', border: `1px solid ${mapClickMode === 'blocked' ? '#f59e0b' : 'var(--border)'}`, background: mapClickMode === 'blocked' ? 'rgba(245,158,11,0.12)' : 'var(--bg-panel-alt)', color: mapClickMode === 'blocked' ? '#f59e0b' : 'var(--text-2)' }}
+                      >⛔ {mapClickMode === 'blocked' ? 'คลิกแผนที่...' : 'เพิ่มจุดปิดถนน'}</button>
+                      {dynBlocked.length > 0 && (
+                        <span style={{ fontSize: 9, color: '#f59e0b' }}>{dynBlocked.length} จุด</span>
+                      )}
+                      {dynBlocked.length > 0 && (
+                        <button onClick={() => setDynBlocked([])} style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 11, padding: 0 }}>ล้าง</button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Find routes button */}
+                  <button
+                    onClick={fetchDynamicRoutes}
+                    disabled={dynLoading || !dynStart || !dynEnd}
+                    style={{ width: '100%', padding: '7px 0', fontSize: 11, fontWeight: 700, borderRadius: 5, cursor: (!dynStart || !dynEnd || dynLoading) ? 'not-allowed' : 'pointer', background: (dynStart && dynEnd && !dynLoading) ? 'var(--blue-primary)' : 'var(--bg-panel-alt)', color: (dynStart && dynEnd && !dynLoading) ? '#fff' : 'var(--text-3)', border: '1px solid var(--border)', letterSpacing: '0.5px' }}
+                  >{dynLoading ? '⏳ กำลังคำนวณ...' : dynRoutes.length > 0 ? `🔍 Find Safe Routes (${dynRoutes.length} found)` : '🔍 Find Safe Routes'}</button>
+
+                  {dynError && (
+                    <div style={{ marginTop: 6, padding: '5px 8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 4, fontSize: 9, color: 'var(--danger)' }}>
+                      ⚠ {dynError} — ใช้ Precomputed Routes แทน
+                    </div>
+                  )}
+
+                  {/* Reset */}
+                  {(dynStart || dynEnd || dynBlocked.length > 0 || dynRoutes.length > 0) && (
+                    <button onClick={() => { setDynStart(null); setDynEnd(null); setDynBlocked([]); setDynRoutes([]); setDynError(null); setDynDataStatus(null); setMapClickMode(null); setDynFallback(false); setDynFallbackReason(null); setDynLimitations(null); setDynAllAffected(false); }} style={{ marginTop: 4, width: '100%', padding: '3px 0', fontSize: 9, borderRadius: 4, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', color: 'var(--text-3)' }}>
+                      ล้างทั้งหมด
+                    </button>
+                  )}
+
+                  {/* dataStatus badges */}
+                  {dynDataStatus && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 8 }}>
+                      {Object.entries(dynDataStatus).map(([key, status]) => {
+                        const colors = { live: '#22c55e', cached: '#3b82f6', fallback: '#f59e0b', local: '#8b5cf6', offline: '#ef4444' };
+                        const color = colors[status] ?? '#64748b';
+                        return (
+                          <span key={key} style={{ fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: `${color}22`, color, border: `1px solid ${color}55`, fontFamily: 'var(--font-mono)' }}>
+                            {key}: {status.toUpperCase()}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Dynamic route cards */}
+                  {dynAllAffected && dynRoutes.length > 0 && (
+                    <div style={{ marginTop: 8, padding: '5px 8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: 4, fontSize: 9, color: 'var(--danger)', fontWeight: 700 }}>
+                      ⚠ All alternatives are affected by blocked points — no clear route available
+                    </div>
+                  )}
+
+                  {dynRoutes.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                      {dynRoutes.map(route => {
+                        const baseColor = route.risk >= 70 ? 'var(--danger)' : route.risk >= 40 ? 'var(--warn)' : 'var(--safe)';
+                        // Blocked routes are never shown as green — minimum amber
+                        const riskColor = route.blocked && route.risk < 40 ? 'var(--warn)' : baseColor;
+                        const isActive  = dynActiveRoute === route.id;
+                        const ft        = route.features ?? {};
+                        const riskFactors = [
+                          { label: 'พื้นที่น้ำท่วม', val: ft.f_flood_exposure ?? 0 },
+                          { label: 'ฝนคาดการณ์',     val: ft.f_forecast_rain  ?? 0 },
+                          { label: 'ประวัติน้ำท่วม', val: ft.f_historical     ?? 0 },
+                          { label: 'ความเสี่ยงดิน',  val: ft.f_soil           ?? 0 },
+                        ];
+                        return (
+                          <div key={route.id} onClick={() => setDynActiveRoute(route.id)}
+                            style={{ background: isActive ? 'var(--bg-panel-alt)' : 'var(--bg-input)', border: `1px solid ${isActive ? 'var(--blue-primary)' : 'var(--border)'}`, borderRadius: 'var(--radius)', padding: '10px 12px', cursor: 'pointer' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                              <div>
+                                <span style={{ fontWeight: 700, fontSize: 12, color: 'var(--text-1)' }}>{route.name}</span>
+                                {route.blocked && (
+                                  <span style={{ marginLeft: 6, fontSize: 9, color: 'var(--warn)', fontWeight: 700 }}>
+                                    ⛔ penalized +{route.blockedPenalty ?? 25} risk (ผ่านจุดปิดถนน)
+                                  </span>
+                                )}
+                              </div>
+                              <span style={{ fontSize: 16, fontWeight: 900, color: riskColor }}>{route.risk}%</span>
+                            </div>
+                            <div style={{ height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden', marginBottom: 6 }}>
+                              <div style={{ height: '100%', width: `${route.risk}%`, background: riskColor }} />
+                            </div>
+                            <div style={{ display: 'flex', gap: 10, fontSize: 10, color: 'var(--text-2)', marginBottom: 6 }}>
+                              <span style={{ color: riskColor, fontWeight: 700 }}>Safety {route.safety}%</span>
+                              <span>·</span>
+                              <span style={{ color: (ft.f_flood_exposure ?? 0) >= 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>Flood {Math.round((ft.f_flood_exposure ?? 0) * 100)}%</span>
+                              <span>·</span>
+                              <span>{route.distanceKm} กม.</span>
+                              <span>·</span>
+                              <span>{Math.round(route.durationMin)} น.</span>
+                            </div>
+                            {isActive && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                {riskFactors.map(({ label, val }) => {
+                                  const pct = Math.round(val * 100);
+                                  const fc  = pct >= 70 ? 'var(--danger)' : pct >= 40 ? 'var(--warn)' : 'var(--safe)';
+                                  return (
+                                    <div key={label} className="rf-row">
+                                      <span className="rf-label">{label}</span>
+                                      <div className="rf-track"><div className="rf-fill" style={{ width: `${pct}%`, background: fc }} /></div>
+                                      <span className="rf-pct">{pct}%</span>
+                                    </div>
+                                  );
+                                })}
+                                {route.blocked && route.blockedDistanceM != null && (
+                                  <div style={{ marginTop: 4, fontSize: 9, color: 'var(--warn)', fontFamily: 'var(--font-mono)' }}>
+                                    nearest blocked point: {route.blockedDistanceM.toLocaleString()} m
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Limitations note */}
+                  {dynLimitations && (
+                    <div style={{ marginTop: 8, padding: '4px 8px', background: 'rgba(100,116,139,0.08)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 8, color: 'var(--text-3)', lineHeight: 1.4 }}>
+                      ⚠ {dynLimitations}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Route cards — primary in fixed mode, Precomputed Backup when dynamic has no routes yet */}
+              {(routeMode === 'fixed' || (routeMode === 'dynamic' && dynRoutes.length === 0)) && (
+              <div className="panel-section" style={routeMode === 'dynamic' ? { opacity: 0.7, marginTop: 8 } : undefined}>
                 <div className="section-header">
-                  <span className="section-title">Routes</span>
+                  <span className="section-title">{routeMode === 'dynamic' ? 'Precomputed Backup' : 'Routes'}</span>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    {routeMode === 'dynamic' && (
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(100,116,139,0.12)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>
+                        ใช้เมื่อยังไม่ได้ Find Route
+                      </span>
+                    )}
                     {routeSource === 'client-estimate' && (
                       <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)' }}>
                         ⚠ CLIENT ESTIMATE
@@ -1011,6 +1322,7 @@ export default function App() {
                   );
                 })}
               </div>
+              )}
 
               {/* Layer toggles */}
               <div className="panel-section">
@@ -1135,6 +1447,13 @@ export default function App() {
               shelters={shelters}
               floodRange={floodRange}
               histFreqRange={histFreqRange}
+              clickMode={mapClickMode}
+              onMapClick={handleMapClick}
+              dynStart={dynStart}
+              dynEnd={dynEnd}
+              dynBlocked={dynBlocked}
+              dynRoutes={dynRoutes}
+              dynActiveRoute={dynActiveRoute}
             />
 
             {/* Map legend */}
