@@ -71,7 +71,7 @@ const AI_RESPONSES = {
   'ทำไมถึงแนะนำเส้นทาง A?': (wx) => `เส้น A มีคะแนนความเสี่ยงต่ำสุด <strong>15%</strong> ในขณะที่:
     <div class="xai-block"><ul>
       <li><strong>ความลึก:</strong> 0.2m — ต่ำกว่าเกณฑ์อันตราย</li>
-      <li><strong>Sentinel-1A SAR:</strong> ยืนยันพื้นผิวแห้ง</li>
+      <li><strong>GISTDA Flood API:</strong> ยืนยันพื้นผิวแห้ง</li>
       <li><strong>OSM Road:</strong> ถนนสายหลักเปิดใช้ได้ 100%</li>
       <li><strong>กรม ปภ.:</strong> ไม่มีรายงานเหตุ 12 ชม.ล่าสุด</li>
     </ul></div>`,
@@ -117,7 +117,7 @@ export default function FloodNav() {
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch weather (with fallback to mock data)
+  // Fetch weather (with fallback to static demo values when TMD API unreachable)
   useEffect(() => {
     const fetchWeather = async () => {
       try {
@@ -135,10 +135,10 @@ export default function FloodNav() {
           return;
         }
       } catch (e) {
-        console.warn('TMD API error, using mock data:', e.message);
+        console.warn('TMD API error, using static demo values:', e.message);
       }
 
-      // Mock data fallback
+      // Static demo fallback (not live data)
       const mockData = {
         WeatherForecasts: [
           {
@@ -238,7 +238,7 @@ export default function FloodNav() {
   // Add log entry
   const addLog = (routeName, isWarn = false, customReason = null) => {
     const reasons = [
-      'ความเสี่ยงต่ำสุด + Sentinel-1A ยืนยันสภาพทาง',
+      'ความเสี่ยงต่ำสุด + TMD/GISTDA ยืนยันสภาพทาง',
       'ระดับน้ำต่ำกว่าเกณฑ์ HAII · เส้นทางพร้อม',
       'ข้อมูล TMD: ฝนหยุดแล้ว · เส้นทางปลอดภัย'
     ];
@@ -292,14 +292,14 @@ export default function FloodNav() {
   useEffect(() => {
     setLogEntries([
       { route: 'Route A', time: '21:12', reason: 'เริ่มต้นปฏิบัติการ · ข้อมูล TMD ล่าสุด', officer: 'วิทยา ล.ศ.', warn: false },
-      { route: 'Route A', time: '20:58', reason: 'Sentinel-1A ยืนยัน: depth 0.2m safe', officer: 'สมชาติ พ.ต.ท.', warn: false },
+      { route: 'Route A', time: '20:58', reason: 'GISTDA Flood API: depth 0.2m ต่ำกว่าเกณฑ์', officer: 'สมชาติ พ.ต.ท.', warn: false },
       { route: 'Route B', time: '20:35', reason: 'ประเมินเส้น B — ระดับน้ำสูงเกินเกณฑ์', officer: 'นพดล ร.ต.อ.', warn: true }
     ]);
 
     setChatMessages([
       {
         role: 'ai',
-        html: `สวัสดีครับ 👋 ผมคือ <strong>FloodNav AI</strong> ระบบช่วยตัดสินใจเส้นทางกู้ภัยน้ำท่วม<br/>อ้างอิงข้อมูลจาก Sentinel-1, TMD, HAII, LDD, OSM และ กรม ปภ. แบบ real-time`,
+        html: `สวัสดีครับ 👋 ผมคือ <strong>FloodNav AI</strong> ระบบช่วยตัดสินใจเส้นทางกู้ภัยน้ำท่วม<br/>อ้างอิงข้อมูลจาก GISTDA Flood API, TMD NWP, LDD ดิน, OSM และ กรม ปภ.`,
         time: clock
       },
       {
@@ -333,7 +333,7 @@ export default function FloodNav() {
         </div>
         <div className="fn-nb-center">
           <div className="fn-chip fn-chip-live">
-            <div className="fn-dot"></div>LIVE · Sentinel-1A
+            <div className="fn-dot"></div>GISTDA · TMD LIVE
           </div>
           <div className="fn-chip fn-chip-warn">
             <div className="fn-dot"></div>
@@ -489,7 +489,7 @@ export default function FloodNav() {
 
         {/* MAP */}
         <div className="fn-map-area">
-          <div className="fn-map-ts">SAR pass: {clock} · Sentinel-1A · GISTDA Sphere</div>
+          <div className="fn-map-ts">อัปเดต: {clock} · GISTDA Flood API · Leaflet OSM</div>
           <div ref={mapRef} className="fn-map-container"></div>
           <div className="fn-map-legend">
             <div className="fn-legend-title">Legend</div>

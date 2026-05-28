@@ -319,7 +319,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     if (!toggles.histFreq) return;
     const wms = FLOOD_WMS[histFreqRange];
     if (!wms) return;
-    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY;
     const layer = new window.sphere.Layer(`freq-wms-${histFreqRange}`, {
       type: window.sphere.LayerType.WMS,
       url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
@@ -341,7 +341,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     if (!toggles.flood) return;
     const wms = FLOOD_WMS[floodRange];
     if (!wms) return;
-    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
+    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY;
     const layer = new window.sphere.Layer(`flood-wms-${floodRange}`, {
       type: window.sphere.LayerType.WMS,
       url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
@@ -397,6 +397,8 @@ export default function App() {
   const [geoSearch, setGeoSearch] = useState('');
   const [stationData, setStationData] = useState({});
   const [routePaths, setRoutePaths] = useState({});
+  const [routeDataStatus, setRouteDataStatus] = useState(null);  // _meta.dataStatus from /api/flood-routes
+  const [routeSource, setRouteSource] = useState('live');         // 'live' | 'client-estimate'
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
   const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false });
   const [floodRange, setFloodRange] = useState('7days');
@@ -591,8 +593,12 @@ export default function App() {
         };
       }
       setRoutePaths(paths);
+      setRouteSource('live');
+      if (data._meta?.dataStatus) setRouteDataStatus(data._meta.dataStatus);
     } catch {
       // Geometric fallback when backend unavailable
+      setRouteSource('client-estimate');
+      setRouteDataStatus(null);
       const fallbackCoords = {
         A: [[99.832,19.908],[99.850,20.025],[99.866,20.175],[99.882,20.434]],
         B: [[99.832,19.908],[99.900,19.924],[99.983,19.952],[100.074,19.977]],
@@ -615,7 +621,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    const mapKey = import.meta.env.VITE_GISTDA_MAP_KEY || 'E65AB56FC36F4ACD986975AF7C570DEC';
+    const mapKey = import.meta.env.VITE_GISTDA_MAP_KEY;
     const scriptId = 'gistda-sphere-map-sdk';
     if (!document.getElementById(scriptId)) {
       const s = document.createElement('script');
@@ -874,11 +880,32 @@ export default function App() {
               <div className="panel-section">
                 <div className="section-header">
                   <span className="section-title">Routes</span>
-                  <button
-                    onClick={fetchRouteExplanation}
-                    style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--blue-primary)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
-                  >🔍 XAI</button>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    {routeSource === 'client-estimate' && (
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)' }}>
+                        ⚠ CLIENT ESTIMATE
+                      </span>
+                    )}
+                    <button
+                      onClick={fetchRouteExplanation}
+                      style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--blue-primary)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
+                    >🔍 XAI</button>
+                  </div>
                 </div>
+                {routeDataStatus && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+                    {Object.entries(routeDataStatus).map(([key, status]) => {
+                      const colors = { live: '#22c55e', cached: '#3b82f6', fallback: '#f59e0b', local: '#8b5cf6', offline: '#ef4444' };
+                      const color = colors[status] ?? '#64748b';
+                      const labels = { gistdaFlood: 'Flood', tmdForecast: 'TMD', floodFreq: 'Freq', lddSoil: 'Soil', rain72h: 'Rain72h', thaiWater: 'Water', traffic: 'CCTV' };
+                      return (
+                        <span key={key} style={{ fontSize: 8, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: `${color}22`, color, border: `1px solid ${color}55`, fontFamily: 'var(--font-mono)', letterSpacing: '0.3px' }}>
+                          {labels[key] ?? key}: {status.toUpperCase()}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
                 {allRoutesData.map(route => {
                   const riskPct  = route.risk ?? 0;
                   const riskColor = riskPct >= 70 ? 'var(--danger)' : riskPct >= 40 ? 'var(--warn)' : 'var(--safe)';
@@ -918,6 +945,14 @@ export default function App() {
                         <span><strong>{route.duration ?? '--'}</strong> น.</span>
                         <span><strong>{route.distance ?? '--'}</strong> กม.</span>
                         {vd && <span>🚗 <strong>{vd.vehicle_count ?? 0}</strong></span>}
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, marginTop: 4, fontSize: 10 }}>
+                        <span style={{ color: riskColor, fontWeight: 700 }}>Safety {safety}%</span>
+                        <span style={{ color: 'var(--text-3)' }}>·</span>
+                        <span style={{ color: floodExp >= 50 ? 'var(--danger)' : 'var(--text-2)' }}>Flood {floodExp}%</span>
+                        {routeSource === 'client-estimate' && (
+                          <span style={{ marginLeft: 'auto', fontSize: 8, color: 'var(--warn)', fontWeight: 700 }}>EST.</span>
+                        )}
                       </div>
 
                       {isActive && (
@@ -1554,7 +1589,12 @@ export default function App() {
               <div className="gov-card" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                 <div className="gov-card-header">
                   <h3>เครื่องมือจำลองจัดสรรกองกำลัง AI Optimizer</h3>
-                  {optimizerRunning && <span className="route-status-tag tag-warn">กำลังประมวลผล {optimizerProgress}%</span>}
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(139,92,246,0.15)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.4)' }}>
+                      ⚗ DEMO SIMULATION
+                    </span>
+                    {optimizerRunning && <span className="route-status-tag tag-warn">กำลังประมวลผล {optimizerProgress}%</span>}
+                  </div>
                 </div>
                 <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '20px', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
                   
