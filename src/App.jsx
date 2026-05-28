@@ -30,8 +30,8 @@ const ROUTES_BASE = [
 
 
 const TOGGLE_LABELS = {
-  flood: 'น้ำท่วม', wind: 'ลม', history: 'ประวัติ',
-  vehicles: 'ยานพาหนะ', histFreq: 'ความถี่น้ำท่วม',
+  flood: 'น้ำท่วม', wind: 'อากาศและฝน', history: 'รายงานเหตุการณ์',
+  vehicles: 'จราจรและยานพาหนะ', histFreq: 'ความถี่น้ำท่วม',
 };
 
 const CONGESTION_CONFIG = {
@@ -642,6 +642,22 @@ export default function App() {
     };
     fetchLogs();
 
+    // Hydrate persisted human override logs from server (Supabase-backed)
+    fetch('http://localhost:3001/api/override/log')
+      .then(r => r.json())
+      .then(logs => {
+        if (logs?.length) {
+          setDecisionLogs(logs.slice(0, 9).map(l => ({
+            route:   l.routeId,
+            time:    new Date(l.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+            reason:  l.reason,
+            officer: l.officer,
+            warn:    true,
+          })));
+        }
+      })
+      .catch(() => {});
+
     const trafficInt  = setInterval(fetchVehicleData, 15000);
     const briefInt    = setInterval(fetchBriefing, 10 * 60 * 1000);
     const logsInt     = setInterval(fetchLogs, 10000);
@@ -870,15 +886,15 @@ export default function App() {
                   const statusCls = riskPct >= 70 ? 'danger' : riskPct >= 40 ? 'warn' : 'safe';
                   const safety    = 100 - riskPct;
                   const ft        = route.features ?? {};
-                  const floodExp  = Math.round((ft.f_flood_depth ?? 0) * 100);
+                  const floodExp  = Math.round((ft.f_flood_exposure ?? 0) * 100);
                   const affRoads  = Math.round((ft.f_historical  ?? 0) * 100);
                   const vd        = vehicleData[route.id];
                   const isActive  = activeRoute === route.id;
                   const riskFactors = [
-                    { label: 'พื้นที่น้ำท่วม', val: ft.f_flood_depth ?? 0 },
-                    { label: 'แนวโน้มน้ำ',    val: ft.f_depth_trend ?? 0 },
-                    { label: 'ประวัติน้ำท่วม', val: ft.f_historical  ?? 0 },
-                    { label: 'ความเสี่ยงดิน',  val: ft.f_soil        ?? 0 },
+                    { label: 'พื้นที่น้ำท่วม', val: ft.f_flood_exposure ?? 0 },
+                    { label: 'ฝนคาดการณ์',     val: ft.f_forecast_rain  ?? 0 },
+                    { label: 'ประวัติน้ำท่วม', val: ft.f_historical      ?? 0 },
+                    { label: 'ความเสี่ยงดิน',  val: ft.f_soil            ?? 0 },
                   ];
                   return (
                     <div
@@ -1105,8 +1121,8 @@ export default function App() {
               <div className="mar-stats">
                 <span>{activeData.duration ?? '--'} น.</span>
                 <span>{activeData.distance ?? '--'} กม.</span>
-                <span style={{ color: (activeData?.features?.f_flood_depth ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
-                  ท่วม {Math.round((activeData?.features?.f_flood_depth ?? 0) * 100)}%
+                <span style={{ color: (activeData?.features?.f_flood_exposure ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
+                  ท่วม {Math.round((activeData?.features?.f_flood_exposure ?? 0) * 100)}%
                 </span>
               </div>
             </div>
@@ -1124,7 +1140,7 @@ export default function App() {
                     style={{ background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
                     onClick={runResourceOptimizer}
                     disabled={optimizerRunning}
-                  >{optimizerRunning ? `⚙ ${optimizerProgress}%` : '⚙ Optimize'}</button>
+                  >{optimizerRunning ? `⚙ ${optimizerProgress}%` : '⚙ Optimize (Demo)'}</button>
                 </div>
                 <div className="resources-grid">
                   {[
@@ -1207,9 +1223,19 @@ export default function App() {
               {/* CCTV Traffic */}
               <div className="panel-section">
                 <div className="section-header">
-                  <span className="section-title">CCTV Traffic</span>
+                  <span className="section-title">จราจร CCTV</span>
+                  {Object.values(vehicleData).every(v => v.congestion_level === 'unknown' || v.vehicle_count === 0)
+                    ? <span className="route-status-tag tag-warn" style={{ fontSize: 9 }}>offline</span>
+                    : <span className="route-status-tag tag-safe" style={{ fontSize: 9 }}>● live</span>}
                 </div>
-                {allRoutesData.map(route => {
+                <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 6, lineHeight: 1.4 }}>
+                  Source: YOLOv8 + Supabase · window 15 min
+                </div>
+                {Object.values(vehicleData).every(v => v.congestion_level === 'unknown' || v.vehicle_count === 0) ? (
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', textAlign: 'center', padding: '10px 0' }}>
+                    ไม่มีข้อมูลยานพาหนะ — CCTV offline
+                  </div>
+                ) : allRoutesData.map(route => {
                   const vd = vehicleData[route.id];
                   const pct = Math.min((vd?.vehicle_count ?? 0) / 30 * 100, 100);
                   const { tag: cTag, label: cLabel } = CONGESTION_CONFIG[vd?.congestion_level] ?? CONGESTION_CONFIG.normal;
@@ -1365,8 +1391,8 @@ export default function App() {
                 {/* TMD Rain Radar Card */}
                 <div className="radar-container">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-2)', fontFamily: 'var(--font-th)' }}>🛰️ สถานีเรดาร์ปริมาณฝน TMD (Meteorological Radar)</h3>
-                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px', animation: 'blink 1.5s infinite' }}>LIVE SCANNING</span>
+                    <h3 style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-2)', fontFamily: 'var(--font-th)' }}>📡 ข้อมูลปริมาณฝนรายสถานี TMD (Forecast Monitoring)</h3>
+                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px' }}>TMD FORECAST</span>
                   </div>
 
                   <div className="radar-grid">
@@ -1519,7 +1545,7 @@ export default function App() {
                 onClick={runResourceOptimizer}
                 disabled={optimizerRunning}
               >
-                {optimizerRunning ? 'กำลังคำนวณการจัดสรร...' : '⚙️ รัน AI Resource Solver'}
+                {optimizerRunning ? 'กำลังคำนวณการจัดสรร...' : '⚙️ รัน AI Resource Solver (Demo)'}
               </button>
             </div>
 

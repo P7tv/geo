@@ -166,13 +166,13 @@ const fetchLiveTraffic = async () => {
 
 // ── ML Risk Model ─────────────────────────────────────────────────────────────
 // Risk Score formula per proposal (GeoAI Final Proposal):
-//   RiskScore = (0.45 × FloodDepth) + (0.25 × DepthTrend) + (0.20 × HistoricalIncident) + (0.10 × SoilRisk)
+//   RiskScore = (0.45 × FloodExposure) + (0.25 × ForecastRain) + (0.20 × HistoricalIncident) + (0.10 × SoilRisk)
 //
 // Feature sources:
-//   FloodDepth        — river level ratio vs. warning level (water sensor / SAR proxy)
-//   DepthTrend        — rainfall accumulation intensity as flood-rise trend proxy
-//   HistoricalIncident— static district-level flood incident frequency (disaster.go.th)
-//   SoilRisk          — static LDD soil permeability/saturation risk per route
+//   FloodExposure     — fraction of route intersecting current GISTDA flood polygons
+//   ForecastRain      — TMD NWP hourly rainfall intensity normalized by saturation threshold (25 mm/hr)
+//   HistoricalIncident— area-weighted GISTDA flood-freq patches (2011-2024) per route bbox
+//   SoilRisk          — LDD PiP soil drainage risk (40%) + Open-Meteo 72h rainfall saturation (60%)
 
 // Fallback: static flood frequency [0-1] used when GISTDA Sphere API is unavailable
 // Static fallback เมื่อ GISTDA flood-freq API ไม่ตอบ
@@ -191,12 +191,14 @@ const ROUTE_BBOX = {
 };
 
 // Cache: flood-freq polygon ต่อ route — refresh ทุก 24h (ข้อมูลรายปี)
-const floodFreqFeatCache = { A: null, B: null, C: null, ts: 0 };
+const floodFreqFeatCache = { A: null, B: null, C: null, ts: 0, lastStatus: 'offline' };
 const FLOOD_FREQ_FEAT_TTL = 24 * 60 * 60_000;
 
 const fetchFloodFreqFeatures = async (routeId) => {
-  if (floodFreqFeatCache[routeId] && Date.now() - floodFreqFeatCache.ts < FLOOD_FREQ_FEAT_TTL)
+  if (floodFreqFeatCache[routeId] && Date.now() - floodFreqFeatCache.ts < FLOOD_FREQ_FEAT_TTL) {
+    floodFreqFeatCache.lastStatus = 'cached';
     return floodFreqFeatCache[routeId];
+  }
   try {
     const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
     const bbox = ROUTE_BBOX[routeId].join(',');
@@ -208,10 +210,13 @@ const fetchFloodFreqFeatures = async (routeId) => {
     const feats = j.features ?? [];
     floodFreqFeatCache[routeId] = feats;
     floodFreqFeatCache.ts = Date.now();
+    floodFreqFeatCache.lastStatus = 'live';
     console.log(`📊 flood-freq Route ${routeId}: ${feats.length}/${j.numberMatched ?? '?'} polygons`);
     return feats;
   } catch (e) {
     console.warn(`fetchFloodFreqFeatures ${routeId}:`, e.message);
+    if (floodFreqFeatCache.lastStatus !== 'live')
+      floodFreqFeatCache.lastStatus = floodFreqFeatCache[routeId] ? 'cached' : 'fallback';
     return floodFreqFeatCache[routeId] ?? [];
   }
 };
@@ -235,14 +240,15 @@ const computeHistoricalRisk = (_routePoints, freqFeatures) => {
 const fetchFloodFreq = async () => ({});  // ไม่ใช้แล้ว → per-route ใน flood-routes endpoint
 
 // LDD soil polygons — loaded from data/soil_polygons.json (pre-processed once by export_soil_polygons.py)
-// Each entry: { risk, bbox:[minLon,minLat,maxLon,maxLat], coords:[[lon,lat],...] }
+// Each entry: { risk, bbox:[minLon,minLat,maxLon,maxLat], ring:[[lon,lat],...], holes:[[[lon,lat],...]] }
 let SOIL_POLYGONS = [];
 try {
   const soilJson = JSON.parse(fs.readFileSync(path.resolve('data/soil_polygons.json'), 'utf8'));
   SOIL_POLYGONS = (soilJson.polygons ?? []).map(p => ({
-    risk: p.risk,
-    bbox: p.bbox,
-    ring: p.coords,  // keep as [[lon, lat], ...] — matches pipRing's GeoJSON format
+    risk:  p.risk,
+    bbox:  p.bbox,
+    ring:  p.coords,         // exterior ring — GeoJSON [lon, lat] order
+    holes: p.holes ?? [],    // interior rings (4.2% of parts) — same order
   }));
   console.log(`🌱 Soil polygons loaded: ${SOIL_POLYGONS.length} rings (LDD จ.เชียงราย)`);
 } catch {
@@ -263,7 +269,9 @@ const computeRouteSoilRisk = (routePoints) => {
     );
     for (const poly of candidates) {
       if (pipRing(pt.lat, pt.lon, poly.ring)) {
-        risks.push(poly.risk);
+        // Exclude point if it falls inside a hole (interior ring)
+        const inHole = poly.holes.some(h => pipRing(pt.lat, pt.lon, h));
+        if (!inHole) { risks.push(poly.risk); }
         break;
       }
     }
@@ -281,10 +289,13 @@ const ROUTE_MIDPOINTS = {
 const RAIN72H_SAT_MM = 150.0;  // mm/72h ที่ทำให้ดินอิ่มน้ำเต็มที่
 
 // Cache: rain72h ต่อ route — refresh ทุก 1 ชั่วโมง
-const rain72hCache = { data: {}, ts: 0 };
+const rain72hCache = { data: {}, ts: 0, lastStatus: 'offline' };
 
 const fetchRain72h = async () => {
-  if (Date.now() - rain72hCache.ts < 60 * 60 * 1000) return rain72hCache.data;
+  if (Date.now() - rain72hCache.ts < 60 * 60 * 1000) {
+    rain72hCache.lastStatus = 'cached';
+    return rain72hCache.data;
+  }
   try {
     const results = await Promise.allSettled(
       Object.entries(ROUTE_MIDPOINTS).map(async ([id, { lat, lon }]) => {
@@ -303,10 +314,12 @@ const fetchRain72h = async () => {
     }
     rain72hCache.data = data;
     rain72hCache.ts   = Date.now();
+    rain72hCache.lastStatus = Object.keys(data).length ? 'live' : 'fallback';
     console.log('🌧  Rain 72h (mm):', data);
     return data;
   } catch (e) {
     console.warn('rain72h fetch failed:', e.message);
+    rain72hCache.lastStatus = Object.keys(rain72hCache.data).length ? 'cached' : 'fallback';
     return rain72hCache.data;
   }
 };
@@ -347,32 +360,35 @@ function routeFloodExposure(points, features) {
 }
 
 // ── GISTDA current flood features — cached 15 min ────────────────────────────
-let gistdaFloodCache = { data: null, ts: 0 };
+let gistdaFloodCache = { data: null, ts: 0, lastStatus: 'offline' };
 const GISTDA_FLOOD_TTL = 15 * 60_000;
 const fetchGistdaCurrentFlood = async () => {
-  if (gistdaFloodCache.data !== null && Date.now() - gistdaFloodCache.ts < GISTDA_FLOOD_TTL)
+  if (gistdaFloodCache.data !== null && Date.now() - gistdaFloodCache.ts < GISTDA_FLOOD_TTL) {
+    gistdaFloodCache.lastStatus = 'cached';
     return gistdaFloodCache.data;
+  }
   try {
     const dataKey = process.env.VITE_GISTDA_DATA_KEY || '756xL1gEPprZgJXwBdZxyorZ48GbuSmgDC576gqwuNTTCqcawOtgjAo6JKXpfTtK';
     const url = 'https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/7days?pv_idn=57&limit=1000';
     const r = await fetchWithTimeout(url, { headers: { 'API-Key': dataKey } }, 10000);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json();
-    gistdaFloodCache = { data: j.features ?? [], ts: Date.now() };
+    gistdaFloodCache = { data: j.features ?? [], ts: Date.now(), lastStatus: 'live' };
     console.log(`🌊 GISTDA flood features loaded: ${gistdaFloodCache.data.length} polygons`);
     return gistdaFloodCache.data;
   } catch (e) {
     console.warn('GISTDA flood fetch error:', e.message);
+    gistdaFloodCache.lastStatus = gistdaFloodCache.data?.length ? 'cached' : 'fallback';
     return gistdaFloodCache.data ?? [];
   }
 };
 
 const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, rain72h = null, floodFreq = null, soilBase = null) => {
-  // FloodExposure (0.45): สัดส่วนเส้นทางที่ผ่านพื้นที่น้ำท่วม GISTDA polygon จริง
-  const f_flood_depth = floodExposure ?? 0.30;
+  // FloodExposure (0.45): fraction of route intersecting current GISTDA flood polygons
+  const f_flood_exposure = floodExposure ?? 0.30;
 
-  // DepthTrend (0.25): rainfall intensity as real-time flood-rise trend proxy
-  const f_depth_trend = Math.min((weather?.rain ?? 0) / RAIN_SATURATION_MM, 1);
+  // ForecastRain (0.25): TMD NWP hourly rain intensity normalized by saturation cap
+  const f_forecast_rain  = Math.min((weather?.rain ?? 0) / RAIN_SATURATION_MM, 1);
 
   // HistoricalIncident (0.20): GISTDA Sphere disaster-recurring API → fallback static
   const f_historical = floodFreq
@@ -384,8 +400,8 @@ const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, r
   const f_soil    = +(lddBase * 0.4 + rainSat * 0.6).toFixed(3);
 
   // Weighted sum per proposal formula
-  const raw = 0.45 * f_flood_depth
-            + 0.25 * f_depth_trend
+  const raw = 0.45 * f_flood_exposure
+            + 0.25 * f_forecast_rain
             + 0.20 * f_historical
             + 0.10 * f_soil;
 
@@ -402,10 +418,10 @@ const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, r
     depth_est: parseFloat(depth),
     confidence,
     features: {
-      f_flood_depth:  +f_flood_depth.toFixed(3),
-      f_depth_trend:  +f_depth_trend.toFixed(3),
-      f_historical:   +f_historical.toFixed(3),
-      f_soil:         +f_soil.toFixed(3),
+      f_flood_exposure: +f_flood_exposure.toFixed(3),
+      f_forecast_rain:  +f_forecast_rain.toFixed(3),
+      f_historical:     +f_historical.toFixed(3),
+      f_soil:           +f_soil.toFixed(3),
     },
   };
 };
@@ -430,11 +446,12 @@ const buildContext = (weather, traffic, routeRisks) => {
 // situation_level: 1=ปกติ 2=เฝ้าระวัง 3=เตือนภัย
 // diff_wl_bank: ระยะห่างจากตลิ่ง (บวก=ยังต่ำกว่า, ลบ=ล้นตลิ่ง)
 
-let waterLevelCache = { data: null, ts: 0 };
+let waterLevelCache = { data: null, ts: 0, lastStatus: 'offline' };
 const WATER_LEVEL_TTL = 5 * 60_000; // refresh ทุก 5 นาที
 
 const fetchWaterLevels = async () => {
   if (waterLevelCache.data && Date.now() - waterLevelCache.ts < WATER_LEVEL_TTL) {
+    waterLevelCache.lastStatus = 'cached';
     return waterLevelCache.data;
   }
   try {
@@ -456,10 +473,11 @@ const fetchWaterLevels = async () => {
       datetime:        row.waterlevel_datetime ?? null,
       status:          row.waterlevel_msl != null ? 'online' : 'nodata',
     }));
-    waterLevelCache = { data: stations, ts: Date.now() };
+    waterLevelCache = { data: stations, ts: Date.now(), lastStatus: 'live' };
     return stations;
   } catch (e) {
     console.warn('fetchWaterLevels error:', e.message);
+    waterLevelCache.lastStatus = waterLevelCache.data ? 'cached' : 'offline';
     return waterLevelCache.data ?? [];
   }
 };
@@ -569,28 +587,6 @@ app.get('/api/warnings', async (_req, res) => {
   } catch (err) {
     res.status(503).json({ error: err.message });
   }
-});
-
-// ── ML flood risk scores — proposal formula with Chiang Rai data ──────────────
-app.get('/api/route-risk', async (_req, res) => {
-  const [weather, traffic] = await Promise.all([fetchLiveWeather(), fetchLiveTraffic()]);
-
-  const [damResults, gistdaFeatures] = await Promise.all([
-    Promise.allSettled(DAM_META.map(fetchDamLevel)),
-    fetchGistdaCurrentFlood(),
-  ]);
-
-  const damLevels = damResults
-    .map(r => r.status === 'fulfilled' && r.value?.percent != null ? r.value : null)
-    .filter(Boolean);
-
-  const result = {};
-  for (const id of ['A', 'B', 'C']) {
-    const staticPoints = (FLOOD_ROUTE_GEOMETRY[id]?.coords ?? []).map(([lon, lat]) => ({ lat, lon }));
-    const exposure = routeFloodExposure(staticPoints, gistdaFeatures);
-    result[id] = predictRouteRisk(id, weather, exposure, damLevels.length ? damLevels : null, traffic);
-  }
-  res.json(result);
 });
 
 app.get('/health', (_req, res) => {
@@ -779,7 +775,7 @@ app.post('/api/explain', async (req, res) => {
 
   const routeSummary = routes.map(r => {
     const f = r.features ?? {};
-    return `เส้นทาง ${r.id}: ความเสี่ยง ${r.risk}% | FloodDepth ${((f.f_flood_depth ?? 0) * 100).toFixed(0)}% | DepthTrend ${((f.f_depth_trend ?? 0) * 100).toFixed(0)}% | HistoricalIncident ${((f.f_historical ?? 0) * 100).toFixed(0)}% | SoilRisk ${((f.f_soil ?? 0) * 100).toFixed(0)}%`;
+    return `เส้นทาง ${r.id}: ความเสี่ยง ${r.risk}% | FloodExposure ${((f.f_flood_exposure ?? 0) * 100).toFixed(0)}% | ForecastRain ${((f.f_forecast_rain ?? 0) * 100).toFixed(0)}% | HistoricalIncident ${((f.f_historical ?? 0) * 100).toFixed(0)}% | SoilRisk ${((f.f_soil ?? 0) * 100).toFixed(0)}%`;
   }).join('\n');
 
   try {
@@ -804,10 +800,19 @@ app.post('/api/explain', async (req, res) => {
   }
 });
 
-// ── Human Override — record officer decision to in-memory audit log ────────────
+// ── Human Override — persisted to Supabase decision_logs + in-memory fallback ──
+// Run once in Supabase dashboard to create the table:
+//   create table decision_logs (
+//     id text primary key,
+//     route_id text not null,
+//     reason text not null,
+//     officer text not null,
+//     created_at timestamptz default now()
+//   );
+//   create index on decision_logs (created_at desc);
 const overrideLog = [];
 
-app.post('/api/override', (req, res) => {
+app.post('/api/override', async (req, res) => {
   const { routeId, reason, officer } = req.body ?? {};
   if (!routeId || !reason || !officer) {
     return res.status(400).json({ error: 'Missing routeId, reason, or officer' });
@@ -820,12 +825,35 @@ app.post('/api/override', (req, res) => {
     timestamp: new Date().toISOString(),
   };
   overrideLog.unshift(record);
-  if (overrideLog.length > 100) overrideLog.pop();  // keep last 100
+  if (overrideLog.length > 100) overrideLog.pop();
   console.log(`[OVERRIDE] ${record.id} — ${officer} selected route ${routeId}: ${reason}`);
+
+  if (supabase) {
+    supabase.from('decision_logs')
+      .insert({ id: record.id, route_id: routeId, reason, officer, created_at: record.timestamp })
+      .then(({ error }) => { if (error) console.warn('[OVERRIDE] Supabase insert failed:', error.message); });
+  }
+
   res.json({ success: true, record });
 });
 
-app.get('/api/override/log', (_req, res) => {
+app.get('/api/override/log', async (_req, res) => {
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('decision_logs')
+      .select('id, route_id, reason, officer, created_at')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (!error && data?.length) {
+      return res.json(data.map(r => ({
+        id:        r.id,
+        routeId:   r.route_id,
+        reason:    r.reason,
+        officer:   r.officer,
+        timestamp: r.created_at,
+      })));
+    }
+  }
   res.json(overrideLog);
 });
 
@@ -922,7 +950,19 @@ app.get('/api/flood-routes', async (_req, res) => {
       }
     }
 
-    res.json(result);
+    // Build per-request data source status flags
+    const anyDamOnline = damResults.some(r => r.status === 'fulfilled' && r.value?.status === 'online');
+    const dataStatus = {
+      gistdaFlood: gistdaFloodCache.lastStatus,
+      tmdForecast: weather         ? 'live'    : 'offline',
+      floodFreq:   floodFreqFeatCache.lastStatus,
+      lddSoil:     SOIL_POLYGONS.length > 0 ? 'local' : 'fallback',
+      rain72h:     rain72hCache.lastStatus,
+      thaiWater:   anyDamOnline    ? 'live'    : waterLevelCache.lastStatus,
+      traffic:     traffic         ? 'live'    : 'offline',
+    };
+
+    res.json({ ...result, _meta: { dataStatus, timestamp: new Date().toISOString() } });
   } catch (err) {
     console.error('flood-routes error:', err.message);
     res.status(500).json({ error: err.message });
