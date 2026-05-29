@@ -1071,6 +1071,78 @@ async function buildFixedFallbackRoutes(weather, gistdaFeatures, rain72hMap, dam
   return routes.sort((a, b) => a.risk - b.risk);
 }
 
+// ── Routing engine constants ────────────────────────────────────────────────────
+const LOCAL_GRAPH_URL = 'http://localhost:3002';
+const LIMITATIONS_LOCAL  = 'Blocked points cause graph-level edge penalties in the local road network. Alternative routes avoid blocked zones where possible.';
+const LIMITATIONS_OSRM   = 'Blocked points are applied as post-route risk penalties, not graph-level edge removals. Route geometry may still pass through blocked zones.';
+const LIMITATIONS_FIXED  = 'Using precomputed A/B/C routes — no custom start/end or real-time routing available.';
+
+// Local graph is experimental — only active when ROUTING_ENGINE=local in env.
+// Default (OSRM public API) is safe for 8 GB RAM machines.
+const LOCAL_GRAPH_ENABLED = process.env.ROUTING_ENGINE === 'local';
+console.log(`[routing-engine] ROUTING_ENGINE = "${process.env.ROUTING_ENGINE ?? ''}"  →  LOCAL_GRAPH_ENABLED = ${LOCAL_GRAPH_ENABLED}`);
+if (LOCAL_GRAPH_ENABLED) {
+  console.log('[routing-engine] ⚠️  Experimental local NetworkX graph active. Health probe: ' + LOCAL_GRAPH_URL + '/health');
+} else {
+  console.log('[routing-engine] Primary: OSRM public API. Set ROUTING_ENGINE=local to enable local graph (npm run start:local).');
+}
+
+// Cache: 10 s when unavailable (fast retry during startup race), 30 s when available.
+let _localGraphAvailable = null;
+let _localGraphCheckedAt = 0;
+async function isLocalGraphAvailable() {
+  if (!LOCAL_GRAPH_ENABLED) return false;
+  const ttl = _localGraphAvailable ? 30_000 : 10_000;   // retry faster while down
+  if (Date.now() - _localGraphCheckedAt < ttl) return _localGraphAvailable;
+  try {
+    const r = await fetchWithTimeout(`${LOCAL_GRAPH_URL}/health`, {}, 3000);
+    const prev = _localGraphAvailable;
+    _localGraphAvailable = r.ok;
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      console.warn(`[local-graph] health check failed: HTTP ${r.status} — ${body.slice(0, 120)}`);
+    } else if (!prev) {
+      console.log('[local-graph] ✅ routing service is up');
+    }
+  } catch (e) {
+    console.warn('[local-graph] health check error:', e.message);
+    _localGraphAvailable = false;
+  }
+  _localGraphCheckedAt = Date.now();
+  return _localGraphAvailable;
+}
+
+// Score routes from either local graph or OSRM into the standard shape
+async function scoreRawRoutes(rawRoutes, weather, gistdaFeatures, rain72hAvg, damLevels, blockedPoints) {
+  return Promise.all(rawRoutes.map(async (r, i) => {
+    const coords = r.geometry.coordinates;
+    if (!coords?.length) return null;
+    const points = coords.map(([lon, lat]) => ({ lat, lon }));
+    const bbox   = [
+      Math.min(...coords.map(c => c[0])), Math.min(...coords.map(c => c[1])),
+      Math.max(...coords.map(c => c[0])), Math.max(...coords.map(c => c[1])),
+    ];
+    const freqFeats  = await fetchFloodFreqForBbox(bbox);
+    const exposure   = routeFloodExposure(points, gistdaFeatures);
+    const historical = computeHistoricalRisk(points, freqFeats);
+    const soilBase   = computeRouteSoilRisk(points);
+    const ml         = predictRouteRisk('DYN' + i, weather, exposure,
+                         damLevels.length ? damLevels : null, null, rain72hAvg, historical, soilBase);
+    const closure    = blockedDetails(points, blockedPoints);
+    return {
+      id: 'DYN' + i, name: 'Route ' + (i + 1),
+      distanceKm:  +(r.distance / 1000).toFixed(2),
+      durationMin: +(r.duration / 60).toFixed(1),
+      risk:   Math.min(ml.risk + closure.blockedPenalty, 99),
+      safety: Math.max(100 - ml.risk - closure.blockedPenalty, 1),
+      features: ml.features,
+      geometry: r.geometry,
+      points,
+      ...closure,
+    };
+  }));
+}
+
 app.post('/api/dynamic-routes', async (req, res) => {
   try {
     const { start, end, blockedPoints = [], routeCount = 3 } = req.body ?? {};
@@ -1078,24 +1150,18 @@ app.post('/api/dynamic-routes', async (req, res) => {
       return res.status(400).json({ error: 'start and end coordinates are required' });
     }
 
-    const ROUTING_ENGINE = 'OSRM public API (router.project-osrm.org)';
-    const LIMITATIONS    = 'Blocked points are applied as post-route risk penalties, not graph-level edge removals. Route geometry may still pass through blocked zones.';
-
-    // Fetch OSRM and all live data in parallel to minimise latency
-    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?alternatives=true&geometries=geojson&overview=full&steps=false`;
-    const [osrmResult, weather, gistdaFeatures, rain72hMap, damResults] = await Promise.all([
-      fetchWithTimeout(osrmUrl, {}, 15000).then(r => r.json()).catch(() => null),
+    // Fetch live data in parallel with the routing attempt
+    const [localOk, weather, gistdaFeatures, rain72hMap, damResults] = await Promise.all([
+      isLocalGraphAvailable(),
       fetchLiveWeather(),
       fetchGistdaCurrentFlood(),
       fetchRain72h(),
       Promise.allSettled(DAM_META.map(fetchDamLevel)),
     ]);
 
-    const damLevels = damResults
-      .filter(r => r.status === 'fulfilled' && r.value?.percent != null)
-      .map(r => r.value);
+    const damLevels    = damResults.filter(r => r.status === 'fulfilled' && r.value?.percent != null).map(r => r.value);
     const rain72hValues = Object.values(rain72hMap ?? {}).filter(v => typeof v === 'number');
-    const rain72hAvg = rain72hValues.length ? rain72hValues.reduce((a, b) => a + b, 0) / rain72hValues.length : null;
+    const rain72hAvg   = rain72hValues.length ? rain72hValues.reduce((a, b) => a + b, 0) / rain72hValues.length : null;
 
     const buildDataStatus = (roadGraph) => ({
       roadGraph,
@@ -1106,75 +1172,118 @@ app.post('/api/dynamic-routes', async (req, res) => {
       rain72h:     rain72hCache.lastStatus,
     });
 
-    // OSRM failed → serve pre-scored fixed routes as transparent fallback
-    if (!osrmResult || osrmResult.code !== 'Ok') {
-      const reason = osrmResult ? (osrmResult.message ?? 'OSRM routing failed') : 'OSRM request timed out';
-      console.warn('[dynamic-routes] OSRM unavailable:', reason, '— serving fixed-route fallback');
-      const fixedRoutes = await buildFixedFallbackRoutes(weather, gistdaFeatures, rain72hMap, damLevels, rain72hAvg);
+    // ── Tier 1: Local NetworkX graph ──────────────────────────────────────────
+    let localGraphError = null;
+    if (localOk) {
+      const reqBody = { start, end, blockedPoints, routeCount };
+      console.log(`[local-graph] POST ${LOCAL_GRAPH_URL}/route  body=${JSON.stringify(reqBody)}`);
+      try {
+        const pyRes = await fetchWithTimeout(`${LOCAL_GRAPH_URL}/route`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(reqBody),
+        }, 20000);
+
+        const pyText = await pyRes.text();
+        console.log(`[local-graph] response status=${pyRes.status}  body=${pyText.slice(0, 300)}`);
+
+        if (pyRes.ok) {
+          const pyData = JSON.parse(pyText);
+          const rawRoutes = (pyData.routes ?? [])
+            .filter(r => r.geometry?.coordinates?.length >= 2)
+            .slice(0, routeCount);
+
+          if (rawRoutes.length > 0) {
+            const scoredRaw  = await scoreRawRoutes(rawRoutes, weather, gistdaFeatures, rain72hAvg, damLevels, blockedPoints);
+            const scored     = scoredRaw.filter(Boolean);
+            const sortedRoutes = scored
+              .sort((a, b) => a.risk - b.risk)
+              .map((route, idx) => ({ ...route, id: 'R' + (idx + 1), name: 'Route ' + (idx + 1) }));
+            const allRoutesAffected = sortedRoutes.length > 0 && sortedRoutes.every(r => r.blocked);
+            return res.json({
+              routes: sortedRoutes,
+              _meta: {
+                mode:             'local-graph',
+                routingEngine:    'NetworkX local graph — chiang_rai_graph.pkl (131K nodes, 354K edges)',
+                limitations:      'Blocked points are applied as graph-level edge penalties in local OSM road graph.',
+                requestedCount:   routeCount,
+                returnedCount:    sortedRoutes.length,
+                allRoutesAffected: allRoutesAffected || undefined,
+                snap:             pyData.snap,
+                elapsed:          pyData.elapsed,
+                dataStatus:       buildDataStatus('local'),
+              },
+            });
+          }
+          localGraphError = `local graph returned 0 usable routes (raw: ${pyData.routes?.length ?? 0})`;
+        } else {
+          localGraphError = `HTTP ${pyRes.status}: ${pyText.slice(0, 200)}`;
+        }
+        console.warn('[local-graph] falling back to OSRM —', localGraphError);
+      } catch (localErr) {
+        localGraphError = localErr.message;
+        console.warn('[local-graph] request threw:', localErr.message, '— falling back to OSRM');
+        _localGraphAvailable = false;
+        _localGraphCheckedAt = Date.now();
+      }
+    }
+
+    // ── Tier 2: OSRM public API ───────────────────────────────────────────────
+    const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?alternatives=true&geometries=geojson&overview=full&steps=false`;
+    const osrmResult = await fetchWithTimeout(osrmUrl, {}, 15000).then(r => r.json()).catch(() => null);
+
+    if (osrmResult?.code === 'Ok') {
+      const osrmRoutes = osrmResult.routes
+        .filter(r => r.geometry?.coordinates?.length >= 2)
+        .slice(0, Math.max(routeCount, 3))
+        .map(r => ({ ...r, distance: r.distance, duration: r.duration }));
+
+      const scoredRaw  = await scoreRawRoutes(osrmRoutes, weather, gistdaFeatures, rain72hAvg, damLevels, blockedPoints);
+      const scored     = scoredRaw.filter(Boolean);
+      const sortedRoutes = scored
+        .sort((a, b) => a.risk - b.risk)
+        .map((route, idx) => ({ ...route, id: 'R' + (idx + 1), name: 'Route ' + (idx + 1) }))
+        .slice(0, routeCount);
+      const allRoutesAffected = sortedRoutes.length > 0 && sortedRoutes.every(r => r.blocked);
+      // OSRM is primary when local graph is disabled; fallback only when local graph tried and failed
+      const osrmIsFallback = LOCAL_GRAPH_ENABLED;
       return res.json({
-        routes: fixedRoutes,
+        routes: sortedRoutes,
         _meta: {
-          mode: 'fixed-fallback',
-          fallback: true,
-          fallbackReason: reason,
-          routingEngine: 'Precomputed routes (OSRM unavailable)',
-          limitations:   LIMITATIONS,
-          requestedCount: routeCount,
-          returnedCount:  fixedRoutes.length,
-          dataStatus: buildDataStatus('offline'),
+          mode:             osrmIsFallback ? 'osrm-fallback' : 'dynamic',
+          routingEngine:    'OSRM public API (router.project-osrm.org)',
+          limitations:      LIMITATIONS_OSRM,
+          ...(osrmIsFallback && { fallback: true, fallbackReason: 'Local routing service unavailable' }),
+          ...(localGraphError && { localGraphError }),
+          requestedCount:   routeCount,
+          returnedCount:    sortedRoutes.length,
+          allRoutesAffected: allRoutesAffected || undefined,
+          dataStatus:       buildDataStatus('live'),
         },
       });
     }
 
-    // Filter routes missing geometry before scoring (guards against malformed OSRM response)
-    const osrmRoutes = osrmResult.routes
-      .filter(r => r.geometry?.coordinates?.length >= 2)
-      .slice(0, Math.max(routeCount, 3));
-    const scored = await Promise.all(osrmRoutes.map(async (r, i) => {
-      const coords = r.geometry.coordinates;
-      const points = coords.map(([lon, lat]) => ({ lat, lon }));
-      const bbox   = [
-        Math.min(...coords.map(c => c[0])), Math.min(...coords.map(c => c[1])),
-        Math.max(...coords.map(c => c[0])), Math.max(...coords.map(c => c[1])),
-      ];
-      const [freqFeats] = await Promise.all([fetchFloodFreqForBbox(bbox)]);
-      const exposure   = routeFloodExposure(points, gistdaFeatures);
-      const historical = computeHistoricalRisk(points, freqFeats);
-      const soilBase   = computeRouteSoilRisk(points);
-      const ml = predictRouteRisk('DYN' + i, weather, exposure, damLevels.length ? damLevels : null, null, rain72hAvg, historical, soilBase);
-      const closure = blockedDetails(points, blockedPoints);
-      return {
-        id: 'DYN' + i, name: 'Route ' + (i + 1),
-        distanceKm:  +(r.distance / 1000).toFixed(2),
-        durationMin: +(r.duration / 60).toFixed(1),
-        risk:   Math.min(ml.risk + closure.blockedPenalty, 99),
-        safety: Math.max(100 - ml.risk - closure.blockedPenalty, 1),
-        features: ml.features,
-        geometry: r.geometry,
-        points,
-        ...closure,
-      };
-    }));
-
-    const scoredRoutes = scored
-      .sort((a, b) => a.risk - b.risk)
-      .map((route, idx) => ({ ...route, id: 'R' + (idx + 1), name: 'Route ' + (idx + 1) }))
-      .slice(0, routeCount);
-
-    const allRoutesAffected = scoredRoutes.length > 0 && scoredRoutes.every(r => r.blocked);
-
-    res.json({
-      routes: scoredRoutes,
+    // ── Tier 3: Precomputed A/B/C ─────────────────────────────────────────────
+    const osrmReason = osrmResult ? (osrmResult.message ?? 'OSRM routing failed') : 'OSRM request timed out';
+    console.warn('[dynamic-routes] OSRM unavailable:', osrmReason, '— serving precomputed fallback');
+    const fixedRoutes = await buildFixedFallbackRoutes(weather, gistdaFeatures, rain72hMap, damLevels, rain72hAvg);
+    return res.json({
+      routes: fixedRoutes,
       _meta: {
-        mode:             'dynamic',
-        routingEngine:    ROUTING_ENGINE,
-        limitations:      LIMITATIONS,
-        requestedCount:   routeCount,
-        returnedCount:    scoredRoutes.length,
-        allRoutesAffected: allRoutesAffected || undefined,
-        dataStatus: buildDataStatus('live'),
+        mode:           'fixed-fallback',
+        routingEngine:  'Precomputed routes (local graph + OSRM both unavailable)',
+        limitations:    LIMITATIONS_FIXED,
+        fallback:       true,
+        fallbackReason: LOCAL_GRAPH_ENABLED
+          ? `Local graph: ${localOk ? 'no route' : 'unavailable'} · OSRM: ${osrmReason}`
+          : `OSRM: ${osrmReason}`,
+        ...(localGraphError && { localGraphError }),
+        requestedCount: routeCount,
+        returnedCount:  fixedRoutes.length,
+        dataStatus:     buildDataStatus('offline'),
       },
     });
+
   } catch (err) {
     console.error('dynamic-routes error:', err.message);
     res.status(500).json({ error: err.message, fallback: true });

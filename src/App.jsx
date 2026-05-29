@@ -479,6 +479,7 @@ export default function App() {
   const [dynFallbackReason, setDynFallbackReason] = useState(null);
   const [dynLimitations, setDynLimitations] = useState(null);
   const [dynAllAffected, setDynAllAffected] = useState(false);
+  const [dynRequestedCount, setDynRequestedCount] = useState(3);
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
   const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false, emergencyPOI: false });
   const [floodRange, setFloodRange] = useState('7days');
@@ -722,11 +723,13 @@ export default function App() {
     setDynFallbackReason(null);
     setDynLimitations(null);
     setDynAllAffected(false);
+    const REQUESTED = 3;
+    setDynRequestedCount(REQUESTED);
     try {
       const res = await fetch('http://localhost:3001/api/dynamic-routes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start: dynStart, end: dynEnd, blockedPoints: dynBlocked, avoidFlood: true, routeCount: 3 }),
+        body: JSON.stringify({ start: dynStart, end: dynEnd, blockedPoints: dynBlocked, avoidFlood: true, routeCount: REQUESTED }),
       });
       const data = await res.json();
       if (!res.ok && !data.routes?.length) throw new Error(data.error ?? 'Routing failed');
@@ -1079,7 +1082,7 @@ export default function App() {
 
                   {/* Reset */}
                   {(dynStart || dynEnd || dynBlocked.length > 0 || dynRoutes.length > 0) && (
-                    <button onClick={() => { setDynStart(null); setDynEnd(null); setDynBlocked([]); setDynRoutes([]); setDynError(null); setDynDataStatus(null); setMapClickMode(null); setDynFallback(false); setDynFallbackReason(null); setDynLimitations(null); setDynAllAffected(false); }} style={{ marginTop: 4, width: '100%', padding: '3px 0', fontSize: 9, borderRadius: 4, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', color: 'var(--text-3)' }}>
+                    <button onClick={() => { setDynStart(null); setDynEnd(null); setDynBlocked([]); setDynRoutes([]); setDynError(null); setDynDataStatus(null); setMapClickMode(null); setDynFallback(false); setDynFallbackReason(null); setDynLimitations(null); setDynAllAffected(false); setDynRequestedCount(3); }} style={{ marginTop: 4, width: '100%', padding: '3px 0', fontSize: 9, borderRadius: 4, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', color: 'var(--text-3)' }}>
                       ล้างทั้งหมด
                     </button>
                   )}
@@ -1100,6 +1103,11 @@ export default function App() {
                   )}
 
                   {/* Dynamic route cards */}
+                  {dynRoutes.length > 0 && dynRoutes.length < dynRequestedCount && (
+                    <div style={{ marginTop: 6, padding: '4px 8px', background: 'rgba(100,116,139,0.08)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 9, color: 'var(--text-3)' }}>
+                      พบ {dynRoutes.length} จาก {dynRequestedCount} เส้นทางที่ขอ — local graph จำกัด MAX_ROUTE_COUNT={dynRoutes.length} (ใช้ npm run start:local:3 เพื่อเปิด 3 เส้นทาง)
+                    </div>
+                  )}
                   {dynAllAffected && dynRoutes.length > 0 && (
                     <div style={{ marginTop: 8, padding: '5px 8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: 4, fontSize: 9, color: 'var(--danger)', fontWeight: 700 }}>
                       ⚠ All alternatives are affected by blocked points — no clear route available
