@@ -141,7 +141,7 @@ const SHELTER_ICONS = {
   assembly_point:{ emoji: '👥', color: 'rgba(245,158,11,0.8)' },
 };
 
-const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute }) => {
+const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null, dynLines: [], dynMarkers: [] });
@@ -274,38 +274,37 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     layersRef.current.trafficMarkers.forEach(m => mapInstance.current.Overlays.remove(m));
     layersRef.current.trafficMarkers = [];
 
-    ROUTES_BASE.forEach(route => {
-      const d = routePaths[route.id]; 
-      if (!d || !d.points || d.points.length < 2) return;
-      
-      const isActive = route.id === activeRoute;
-      const rp = d.risk ?? 0;
-      const riskHex = rp >= 70 ? '#ef4444' : rp >= 40 ? '#f59e0b' : '#22c55e';
-      const lineColor = toggles.vehicles
-        ? getCongestionColor(route.id, vehicleData, riskHex)
-        : (isActive ? riskHex : riskHex + '66');
-
-      const coords = d.points
-        .filter(p => p && !isNaN(p.lon) && !isNaN(p.lat))
-        .map(p => ({ lon: Number(p.lon), lat: Number(p.lat) }));
-        
-      if (coords.length < 2) return;
-
-      const poly = new window.sphere.Polyline(coords, { lineColor, lineWidth: isActive ? 6 : 2 });
-      mapInstance.current.Overlays.add(poly);
-      layersRef.current.polylines[route.id] = poly;
-      if (isActive) {
-        const s = new window.sphere.Marker(coords[0], { title: 'ต้นทาง' });
-        const e = new window.sphere.Marker(coords[coords.length - 1], { title: 'ปลายทาง' });
-        mapInstance.current.Overlays.add(s); mapInstance.current.Overlays.add(e);
-        layersRef.current.markers.push(s, e);
+    // Precomputed A/B/C polylines — only in fixed mode or when truly precomputed fallback
+    const showPrecomputed = routeMode !== 'dynamic' || isPrecomputedFallback;
+    if (showPrecomputed) {
+      ROUTES_BASE.forEach(route => {
+        const d = routePaths[route.id];
+        if (!d || !d.points || d.points.length < 2) return;
+        const isActive = route.id === activeRoute;
+        const rp = d.risk ?? 0;
+        const riskHex = rp >= 70 ? '#ef4444' : rp >= 40 ? '#f59e0b' : '#22c55e';
+        const lineColor = toggles.vehicles
+          ? getCongestionColor(route.id, vehicleData, riskHex)
+          : (isActive ? riskHex : riskHex + '66');
+        const coords = d.points
+          .filter(p => p && !isNaN(p.lon) && !isNaN(p.lat))
+          .map(p => ({ lon: Number(p.lon), lat: Number(p.lat) }));
+        if (coords.length < 2) return;
+        const poly = new window.sphere.Polyline(coords, { lineColor, lineWidth: isActive ? 6 : 2 });
+        mapInstance.current.Overlays.add(poly);
+        layersRef.current.polylines[route.id] = poly;
+        if (isActive) {
+          const s = new window.sphere.Marker(coords[0], { title: 'ต้นทาง' });
+          const e = new window.sphere.Marker(coords[coords.length - 1], { title: 'ปลายทาง' });
+          mapInstance.current.Overlays.add(s); mapInstance.current.Overlays.add(e);
+          layersRef.current.markers.push(s, e);
+        }
+      });
+      if (toggles.vehicles) {
+        layersRef.current.trafficMarkers = renderVehicleTrafficBadges(mapInstance.current, routePaths, vehicleData, activeRoute);
       }
-    });
-
-    if (toggles.vehicles) {
-      layersRef.current.trafficMarkers = renderVehicleTrafficBadges(mapInstance.current, routePaths, vehicleData, activeRoute);
     }
-  }, [activeRoute, routePaths, toggles.vehicles, vehicleData]);
+  }, [activeRoute, routePaths, toggles.vehicles, vehicleData, routeMode, isPrecomputedFallback]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -457,6 +456,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
 // ============================================================
 export default function App() {
   const [activeRoute, setActiveRoute] = useState('A');
+  const leftPanelScrollRef = useRef(null);
   const [activeTab, setActiveTab] = useState('cockpit'); // Routing tab state
   const [geoSearch, setGeoSearch] = useState('');
   const [stationData, setStationData] = useState({});
@@ -475,7 +475,9 @@ export default function App() {
   const [dynError, setDynError] = useState(null);
   const [dynDataStatus, setDynDataStatus] = useState(null);
   const [dynActiveRoute, setDynActiveRoute] = useState(null);
-  const [dynFallback, setDynFallback] = useState(false);
+  // 'local-graph' | 'osrm' | 'precomputed' | null
+  const [dynRoutingSource, setDynRoutingSource] = useState(null);
+  const [dynFallbackFrom, setDynFallbackFrom] = useState(null);   // 'local-graph' when OSRM used as backup
   const [dynFallbackReason, setDynFallbackReason] = useState(null);
   const [dynLimitations, setDynLimitations] = useState(null);
   const [dynAllAffected, setDynAllAffected] = useState(false);
@@ -719,7 +721,8 @@ export default function App() {
     setDynLoading(true);
     setDynError(null);
     setDynRoutes([]);
-    setDynFallback(false);
+    setDynRoutingSource(null);
+    setDynFallbackFrom(null);
     setDynFallbackReason(null);
     setDynLimitations(null);
     setDynAllAffected(false);
@@ -734,17 +737,25 @@ export default function App() {
       const data = await res.json();
       if (!res.ok && !data.routes?.length) throw new Error(data.error ?? 'Routing failed');
       const meta = data._meta ?? {};
+
+      // Determine routing source — only precomputed when backend explicitly says so
+      const isPrecomputed = meta.fallbackType === 'precomputed' || meta.mode === 'fixed-fallback';
+      const source = meta.mode === 'local-graph' ? 'local-graph'
+                   : isPrecomputed              ? 'precomputed'
+                   :                             'osrm';
+      setDynRoutingSource(source);
+      setDynFallbackFrom(meta.fallbackFrom ?? null);
+      if (isPrecomputed) setDynFallbackReason(meta.fallbackReason ?? 'Routing unavailable for this area');
+
       setDynRoutes(data.routes ?? []);
       setDynDataStatus(meta.dataStatus ?? null);
       setDynLimitations(meta.limitations ?? null);
       setDynAllAffected(meta.allRoutesAffected === true);
-      if (meta.fallback) {
-        setDynFallback(true);
-        setDynFallbackReason(meta.fallbackReason ?? 'OSRM unavailable');
-      }
       if (data.routes?.length) setDynActiveRoute(data.routes[0].id);
+
       const count = data.routes?.length ?? 0;
-      addToast(`พบ ${count} เส้นทาง${meta.fallback ? ' (Precomputed Fallback)' : ''} — เรียงจากความเสี่ยงต่ำสุด`, meta.fallback ? 'warn' : 'success');
+      const toastSuffix = isPrecomputed ? ' (Precomputed Fallback — เชียงรายเท่านั้น)' : '';
+      addToast(`พบ ${count} เส้นทาง${toastSuffix} — เรียงจากความเสี่ยงต่ำสุด`, isPrecomputed ? 'warn' : 'success');
     } catch (e) {
       setDynError(e.message);
       addToast(`Dynamic routing ล้มเหลว: ${e.message}`, 'warn');
@@ -820,6 +831,11 @@ export default function App() {
   useEffect(() => {
     if (Object.keys(stationData).length > 0) fetchRealRoutes();
   }, [stationData, incidents, gistdaRiskPoints]);
+
+  // Reset scroll to top when switching route modes so the toggle is always visible
+  useEffect(() => {
+    if (leftPanelScrollRef.current) leftPanelScrollRef.current.scrollTop = 0;
+  }, [routeMode]);
 
   useEffect(() => {
     setGistdaRiskPoints(CR_RISK_POINTS);
@@ -913,6 +929,7 @@ export default function App() {
     return pt.name.toLowerCase().includes(s) || pt.lat.toString().includes(s) || pt.lon.toString().includes(s);
   });
 
+  const isPrecomputedFallback = dynRoutingSource === 'precomputed';
   const activeData = { ...ROUTES_BASE.find(r => r.id === activeRoute), ...routePaths[activeRoute] };
   const allRoutesData = ROUTES_BASE.map(r => ({ ...r, ...routePaths[r.id] }));
 
@@ -1007,16 +1024,19 @@ export default function App() {
 
           {/* LEFT: Route cards + toggles + log */}
           <aside className="left-panel">
-            <div className="left-panel-scroll">
 
-              {/* Route mode toggle */}
-              <div style={{ display: 'flex', gap: 0, marginBottom: 8, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)' }}>
+            {/* Route mode toggle — outside scroll container so it never scrolls away */}
+            <div style={{ padding: '8px 10px 0', flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', gap: 0, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)', marginBottom: 8 }}>
                 {[['fixed','Precomputed Routes'],['dynamic','Dynamic Routing']].map(([mode, label]) => (
                   <button key={mode} onClick={() => setRouteMode(mode)} style={{ flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 700, cursor: 'pointer', border: 'none', background: routeMode === mode ? 'var(--blue-primary)' : 'var(--bg-panel-alt)', color: routeMode === mode ? '#fff' : 'var(--text-3)', letterSpacing: '0.3px' }}>
                     {label}
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="left-panel-scroll" ref={leftPanelScrollRef}>
 
               {/* Dynamic Routing Control Panel */}
               {routeMode === 'dynamic' && (
@@ -1024,15 +1044,30 @@ export default function App() {
                   <div className="section-header">
                     <span className="section-title">Dynamic Routing</span>
                     <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                      {dynFallback && (
-                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)55' }}>⚠ FALLBACK: PRECOMPUTED</span>
+                      {isPrecomputedFallback && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)55' }}>⚠ PRECOMPUTED</span>
                       )}
-                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(59,130,246,0.15)', color: 'var(--blue-primary)', border: '1px solid var(--blue-primary)55' }}>OSRM + ML</span>
+                      {dynRoutingSource === 'local-graph' && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(34,197,94,0.15)', color: 'var(--safe)', border: '1px solid var(--safe)55' }}>LOCAL GRAPH</span>
+                      )}
+                      {dynRoutingSource === 'osrm' && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(59,130,246,0.15)', color: 'var(--blue-primary)', border: '1px solid var(--blue-primary)55' }}>
+                          {dynFallbackFrom === 'local-graph' ? 'OSRM (local unavail.)' : 'OSRM'}
+                        </span>
+                      )}
+                      {!dynRoutingSource && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(59,130,246,0.15)', color: 'var(--blue-primary)', border: '1px solid var(--blue-primary)55' }}>LOCAL + ML</span>
+                      )}
                     </div>
                   </div>
-                  {dynFallback && dynFallbackReason && (
+                  {isPrecomputedFallback && dynFallbackReason && (
                     <div style={{ marginBottom: 8, padding: '4px 8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, fontSize: 9, color: 'var(--warn)' }}>
                       {dynFallbackReason} — แสดงเส้นทาง Precomputed แทน
+                    </div>
+                  )}
+                  {dynRoutingSource === 'osrm' && dynFallbackFrom === 'local-graph' && (
+                    <div style={{ marginBottom: 8, padding: '4px 8px', background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 4, fontSize: 9, color: 'var(--blue-primary)' }}>
+                      Local graph unavailable — ใช้ OSRM public API (เส้นทาง Dynamic ยังใช้งานได้)
                     </div>
                   )}
 
@@ -1082,7 +1117,7 @@ export default function App() {
 
                   {/* Reset */}
                   {(dynStart || dynEnd || dynBlocked.length > 0 || dynRoutes.length > 0) && (
-                    <button onClick={() => { setDynStart(null); setDynEnd(null); setDynBlocked([]); setDynRoutes([]); setDynError(null); setDynDataStatus(null); setMapClickMode(null); setDynFallback(false); setDynFallbackReason(null); setDynLimitations(null); setDynAllAffected(false); setDynRequestedCount(3); }} style={{ marginTop: 4, width: '100%', padding: '3px 0', fontSize: 9, borderRadius: 4, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', color: 'var(--text-3)' }}>
+                    <button onClick={() => { setDynStart(null); setDynEnd(null); setDynBlocked([]); setDynRoutes([]); setDynError(null); setDynDataStatus(null); setMapClickMode(null); setDynRoutingSource(null); setDynFallbackFrom(null); setDynFallbackReason(null); setDynLimitations(null); setDynAllAffected(false); setDynRequestedCount(3); }} style={{ marginTop: 4, width: '100%', padding: '3px 0', fontSize: 9, borderRadius: 4, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', color: 'var(--text-3)' }}>
                       ล้างทั้งหมด
                     </button>
                   )}
@@ -1189,15 +1224,29 @@ export default function App() {
                 </div>
               )}
 
-              {/* Route cards — primary in fixed mode, Precomputed Backup when dynamic has no routes yet */}
-              {(routeMode === 'fixed' || (routeMode === 'dynamic' && dynRoutes.length === 0)) && (
-              <div className="panel-section" style={routeMode === 'dynamic' ? { opacity: 0.7, marginTop: 8 } : undefined}>
+              {/* Placeholder — dynamic mode, no routes yet, no fallback */}
+              {routeMode === 'dynamic' && dynRoutes.length === 0 && !isPrecomputedFallback && (
+                <div style={{ padding: '20px 12px', textAlign: 'center', color: 'var(--text-3)', fontSize: 11, lineHeight: 1.7 }}>
+                  <div style={{ fontSize: 22, marginBottom: 8 }}>🗺️</div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>ยังไม่มีเส้นทาง</div>
+                  <div>เลือกจุดเริ่มต้นและปลายทาง<br />แล้วกด <strong>Find Safe Routes</strong></div>
+                </div>
+              )}
+
+              {/* Route cards — fixed mode OR precomputed fallback after dynamic failure */}
+              {(routeMode === 'fixed' || isPrecomputedFallback) && (
+              <div className="panel-section">
+                {isPrecomputedFallback && routeMode === 'dynamic' && (
+                  <div style={{ marginBottom: 8, padding: '5px 8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, fontSize: 9, color: 'var(--warn)', lineHeight: 1.5 }}>
+                    ⚠ เส้นทางด้านล่างเป็นข้อมูล Precomputed ของจ.เชียงรายเท่านั้น — ไม่ใช่เส้นทางจาก Start/End ที่เลือก
+                  </div>
+                )}
                 <div className="section-header">
-                  <span className="section-title">{routeMode === 'dynamic' ? 'Precomputed Backup' : 'Routes'}</span>
+                  <span className="section-title">{isPrecomputedFallback ? 'Precomputed Fallback' : 'Routes'}</span>
                   <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                    {routeMode === 'dynamic' && (
-                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(100,116,139,0.12)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>
-                        ใช้เมื่อยังไม่ได้ Find Route
+                    {isPrecomputedFallback && (
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)55' }}>
+                        ⚠ PRECOMPUTED FALLBACK
                       </span>
                     )}
                     {routeSource === 'client-estimate' && (
@@ -1462,6 +1511,8 @@ export default function App() {
               dynBlocked={dynBlocked}
               dynRoutes={dynRoutes}
               dynActiveRoute={dynActiveRoute}
+              routeMode={routeMode}
+              isPrecomputedFallback={isPrecomputedFallback}
             />
 
             {/* Map legend */}
@@ -1472,22 +1523,47 @@ export default function App() {
               <div className="legend-row"><span className="legend-dot" style={{ background: '#ef4444' }} />สูง (&gt;70%)</div>
             </div>
 
-            <div className="map-active-route">
-              <div>
-                <div className="mar-label">เส้นทางที่เลือก</div>
-                <div className="mar-name">{activeData.name}</div>
-              </div>
-              <div className="mar-risk" style={{ color: activeData.color }}>
-                {activeData.risk ?? '--'}%
-              </div>
-              <div className="mar-stats">
-                <span>{activeData.duration ?? '--'} น.</span>
-                <span>{activeData.distance ?? '--'} กม.</span>
-                <span style={{ color: (activeData?.features?.f_flood_exposure ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
-                  ท่วม {Math.round((activeData?.features?.f_flood_exposure ?? 0) * 100)}%
-                </span>
-              </div>
-            </div>
+            {(() => {
+              if (routeMode === 'dynamic' && !isPrecomputedFallback) {
+                const dr = dynRoutes.find(r => r.id === dynActiveRoute);
+                if (!dr) return null;
+                const rc = dr.risk >= 70 ? 'var(--danger)' : dr.risk >= 40 ? 'var(--warn)' : 'var(--safe)';
+                return (
+                  <div className="map-active-route">
+                    <div>
+                      <div className="mar-label">
+                        Dynamic Route — {dynRoutingSource === 'local-graph' ? 'Local Graph' : 'OSRM/API'}
+                      </div>
+                      <div className="mar-name">{dr.name} — จากจุดเริ่มต้นที่เลือก</div>
+                    </div>
+                    <div className="mar-risk" style={{ color: rc }}>{dr.risk}%</div>
+                    <div className="mar-stats">
+                      <span>{Math.round(dr.durationMin)} น.</span>
+                      <span>{dr.distanceKm} กม.</span>
+                      <span style={{ color: (dr.features?.f_flood_exposure ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
+                        ท่วม {Math.round((dr.features?.f_flood_exposure ?? 0) * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div className="map-active-route">
+                  <div>
+                    <div className="mar-label">{isPrecomputedFallback ? '⚠ Precomputed Fallback' : 'เส้นทางที่เลือก'}</div>
+                    <div className="mar-name">{activeData.name}</div>
+                  </div>
+                  <div className="mar-risk" style={{ color: activeData.color }}>{activeData.risk ?? '--'}%</div>
+                  <div className="mar-stats">
+                    <span>{activeData.duration ?? '--'} น.</span>
+                    <span>{activeData.distance ?? '--'} กม.</span>
+                    <span style={{ color: (activeData?.features?.f_flood_exposure ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
+                      ท่วม {Math.round((activeData?.features?.f_flood_exposure ?? 0) * 100)}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* RIGHT: Data + AI chat */}

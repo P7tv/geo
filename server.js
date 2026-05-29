@@ -1245,7 +1245,7 @@ app.post('/api/dynamic-routes', async (req, res) => {
         .map((route, idx) => ({ ...route, id: 'R' + (idx + 1), name: 'Route ' + (idx + 1) }))
         .slice(0, routeCount);
       const allRoutesAffected = sortedRoutes.length > 0 && sortedRoutes.every(r => r.blocked);
-      // OSRM is primary when local graph is disabled; fallback only when local graph tried and failed
+      // OSRM produces real dynamic routes — NOT precomputed — even when used as backup for local graph
       const osrmIsFallback = LOCAL_GRAPH_ENABLED;
       return res.json({
         routes: sortedRoutes,
@@ -1253,7 +1253,9 @@ app.post('/api/dynamic-routes', async (req, res) => {
           mode:             osrmIsFallback ? 'osrm-fallback' : 'dynamic',
           routingEngine:    'OSRM public API (router.project-osrm.org)',
           limitations:      LIMITATIONS_OSRM,
-          ...(osrmIsFallback && { fallback: true, fallbackReason: 'Local routing service unavailable' }),
+          fallback:         false,          // OSRM routes are dynamic, never precomputed
+          fallbackType:     null,
+          ...(osrmIsFallback && { fallbackFrom: 'local-graph', fallbackReason: 'Local routing service unavailable' }),
           ...(localGraphError && { localGraphError }),
           requestedCount:   routeCount,
           returnedCount:    sortedRoutes.length,
@@ -1271,9 +1273,10 @@ app.post('/api/dynamic-routes', async (req, res) => {
       routes: fixedRoutes,
       _meta: {
         mode:           'fixed-fallback',
-        routingEngine:  'Precomputed routes (local graph + OSRM both unavailable)',
+        routingEngine:  'Precomputed A/B/C routes (Chiang Rai only)',
         limitations:    LIMITATIONS_FIXED,
         fallback:       true,
+        fallbackType:   'precomputed',     // explicit — UI shows A/B/C cards + warning
         fallbackReason: LOCAL_GRAPH_ENABLED
           ? `Local graph: ${localOk ? 'no route' : 'unavailable'} · OSRM: ${osrmReason}`
           : `OSRM: ${osrmReason}`,
