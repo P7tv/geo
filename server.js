@@ -513,6 +513,29 @@ const predictRouteRisk = (routeId, weather, floodExposure, _damLevels, _traffic,
   };
 };
 
+// Format routeContext sent from frontend into a prompt string for Typhoon AI.
+// routeContext = { mode, activeRouteId, routingSource, routes[], dataStatus }
+const buildRouteContextStr = (routeContext) => {
+  if (!routeContext?.routes?.length) return 'ยังไม่มีข้อมูลเส้นทาง (กด Find Safe Routes หรือรอโหลด ML model)';
+  const modeLabel = routeContext.mode === 'dynamic'
+    ? `Dynamic Routing (${routeContext.routingSource ?? 'OSRM'})`
+    : 'Precomputed Routes A/B/C';
+  const dsStr = routeContext.dataStatus
+    ? Object.entries(routeContext.dataStatus).map(([k, v]) => `${k}:${v}`).join(', ')
+    : '';
+  const lines = routeContext.routes.map(r => {
+    const f = r.features ?? {};
+    const isActive = r.id === routeContext.activeRouteId ? ' [★ เส้นทางที่เลือก]' : '';
+    const blk = (r.blockedPenalty ?? 0) > 0 ? ` | ผ่านจุดปิดถนน +${r.blockedPenalty}%` : '';
+    return `${r.name ?? r.id}${isActive}: เสี่ยง ${r.risk}% ปลอดภัย ${r.safety ?? 100 - r.risk}%`
+      + ` | ท่วม ${((f.f_flood_exposure ?? 0) * 100).toFixed(0)}%`
+      + ` | ฝน ${((f.f_forecast_rain ?? 0) * 100).toFixed(0)}%`
+      + ` | ประวัติน้ำท่วม ${((f.f_historical ?? 0) * 100).toFixed(0)}%`
+      + ` | ดิน ${((f.f_soil ?? 0) * 100).toFixed(0)}%${blk}`;
+  });
+  return `[Routing: ${modeLabel}]\n${lines.join('\n')}${dsStr ? `\n[Data sources: ${dsStr}]` : ''}`;
+};
+
 // Risk formula factors: f_flood_exposure(0.45) + f_forecast_rain(0.25) + f_historical(0.20) + f_soil(0.10)
 // dam/traffic are monitoring context signals — not part of the risk formula.
 const buildContext = (weather, traffic, routeRisks) => {
@@ -745,7 +768,7 @@ app.get('/api/vehicles/route-summary', async (_req, res) => {
 // AI Chat (Typhoon)
 app.post('/api/ai/chat', async (req, res) => {
   if (!req.body) return res.status(400).json({ error: 'Invalid request body' });
-  const { message, history, routeRisks } = req.body;
+  const { message, history, routeContext } = req.body;
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: 'Missing message' });
   }
@@ -753,14 +776,24 @@ app.post('/api/ai/chat', async (req, res) => {
 
   try {
     const [weather, traffic] = await Promise.all([fetchLiveWeather(), fetchLiveTraffic()]);
-    const context = buildContext(weather, traffic, routeRisks ?? null);
+    const sensorContext = buildContext(weather, traffic, null);
+    const routeContextStr = buildRouteContextStr(routeContext ?? null);
 
     const systemPrompt = `คุณคือ FloodNav AI ผู้ช่วยนำทางเลี่ยงน้ำท่วมสำหรับจังหวัดเชียงราย (4 อำเภอ: เมือง, แม่สาย, เทิง, เวียงป่าเป้า)
 ตอบภาษาไทย กระชับ ไม่เกิน 5 ประโยค อิงข้อมูลใน CONTEXT เท่านั้น ห้ามแต่งข้อมูลนอก CONTEXT
 หากพบการรายงานภัย (น้ำท่วม/ดินถล่ม/สิ่งกีดขวาง) ให้ตอบรับและระบุว่ากำลังรัน addIncident()
 
-[CONTEXT]
-${context}`;
+กฎสำคัญ:
+- ห้ามคำนวณ risk score เอง ใช้เฉพาะตัวเลขใน [ข้อมูลเส้นทาง] เท่านั้น
+- dam levels และ CCTV traffic เป็น monitoring context ไม่ใช่ส่วนของ risk formula
+- ถ้าไม่มีข้อมูลเส้นทางในส่วน [ข้อมูลเส้นทาง] ให้ตอบว่า "ยังไม่มีข้อมูลเส้นทางที่เลือก"
+- ถ้า dataSource ของ feature ใดเป็น offline/fallback ให้แจ้งผู้ใช้ด้วย
+
+[สภาพอากาศและจราจร]
+${sensorContext}
+
+[ข้อมูลเส้นทาง ML Model]
+${routeContextStr}`;
 
     // Keyword → tool call detection (Chiang Rai locations)
     const KNOWN_LOCATIONS = [
@@ -817,8 +850,25 @@ app.get('/api/ai/briefing', async (_req, res) => {
     });
   }
 
-  const [weather, traffic] = await Promise.all([fetchLiveWeather(), fetchLiveTraffic()]);
-  const context = buildContext(weather, traffic, null);
+  const [weather, traffic, gistdaFeatures, freqFeatA, freqFeatB, freqFeatC, rain72hMap] = await Promise.all([
+    fetchLiveWeather(), fetchLiveTraffic(), fetchGistdaCurrentFlood(),
+    fetchFloodFreqFeatures('A'), fetchFloodFreqFeatures('B'), fetchFloodFreqFeatures('C'),
+    fetchRain72h(),
+  ]);
+  const freqFeatMap = { A: freqFeatA, B: freqFeatB, C: freqFeatC };
+
+  // Compute route risks from cached/live data for briefing context
+  const routeRisks = {};
+  for (const [id, geo] of Object.entries(FLOOD_ROUTE_GEOMETRY)) {
+    const points   = geo.coords.map(([lon, lat]) => ({ lat, lon }));
+    const exposure = gistdaFloodCache.data !== null ? routeFloodExposure(points, gistdaFeatures) : null;
+    const historical = computeHistoricalRisk(points, freqFeatMap[id]);
+    const soilBase   = computeRouteSoilRisk(points);
+    const ml = predictRouteRisk(id, weather, exposure, null, null, rain72hMap[id] ?? null, historical, soilBase);
+    routeRisks[id] = { risk: ml.risk, features: ml.features };
+  }
+
+  const context = buildContext(weather, traffic, routeRisks);
 
   // alert_level from live sensor data (independent of AI)
   let alert_level = 1;

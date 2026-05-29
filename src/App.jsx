@@ -910,6 +910,31 @@ export default function App() {
     fetchGistdaFloodData(floodRange);
   }, [floodRange]);
 
+  // Build route context from current UI state for Typhoon AI
+  const buildRouteContext = () => {
+    if (routeMode === 'dynamic' && dynRoutes.length > 0) {
+      return {
+        mode: 'dynamic', activeRouteId: dynActiveRoute, routingSource: dynRoutingSource,
+        routes: dynRoutes.map(r => ({
+          id: r.id, name: r.name, risk: r.risk, safety: r.safety,
+          distanceKm: r.distanceKm, durationMin: r.durationMin,
+          features: r.features, blockedExposure: r.blockedExposure ?? 0, blockedPenalty: r.blockedPenalty ?? 0,
+        })),
+        dataStatus: dynDataStatus,
+      };
+    }
+    const routes = allRoutesData.filter(r => r.risk != null);
+    if (!routes.length) return null;
+    return {
+      mode: 'fixed', activeRouteId: activeRoute, routingSource: 'precomputed',
+      routes: routes.map(r => ({
+        id: r.id, name: r.name, risk: r.risk ?? 0, safety: 100 - (r.risk ?? 0),
+        distanceKm: r.distance, durationMin: r.duration, features: r.features,
+      })),
+      dataStatus: routeDataStatus,
+    };
+  };
+
   const sendChat = async (presetText = null) => {
     const msg = (presetText ?? chatInput).trim();
     if (!msg) return;
@@ -926,12 +951,12 @@ export default function App() {
       const res = await fetch('http://localhost:3001/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, history: historyPayload }),
+        body: JSON.stringify({ message: msg, history: historyPayload, routeContext: buildRouteContext() }),
       });
       const data = await res.json();
       setIsTyping(false);
       if (data.reply) {
-        setChatMessages(p => [...p, { role: 'ai', html: data.reply, toolCall: data.toolCall, time: clock.slice(0, 5) }]);
+        setChatMessages(p => [...p, { role: 'ai', html: data.reply, toolCall: data.toolCall, time: clock.slice(0, 5), isOffline: false }]);
         if (data.toolCall) executeAiTool(data.toolCall);
       }
     } catch (_) {
@@ -952,18 +977,21 @@ export default function App() {
 
   const runOfflineParser = (text) => {
     const l = text.toLowerCase();
-    let reply = 'ยินดีรับคำถามครับ — สอบถามเส้นทาง A B C สภาพอากาศ หรือสั่งปักหมุดจุดน้ำท่วมได้เลย';
+    const ctx = buildRouteContext();
+    let reply = 'ขณะนี้ Typhoon AI offline — ระบบยังแสดง route risk จากโมเดลหลักได้ กรุณาดู route cards หรือกดปุ่ม 🔍 XAI เพื่อดูเหตุผลความเสี่ยง';
     let toolCall = null;
-    if (l.includes('กาดก้อม') || l.includes('ท่วม') || l.includes('หลาก')) {
-      reply = '⚠️ ตรวจพบจุดเสี่ยง <strong>กาดก้อม</strong> น้ำลึก 1.5 ม. — กำลังปักหมุดบนแผนที่...';
-      toolCall = { name: 'addIncident', arguments: { name: 'กาดก้อม', lat: 18.775, lon: 98.988, depth: 1.5, severity: 0.95 } };
-    } else if (l.includes('จัดสรร') || l.includes('เรือ') || l.includes('ทรัพยากร')) {
-      reply = '🤖 กำลังวิเคราะห์จัดสรรทรัพยากรกู้ภัย...';
+
+    if (/ท่วม|หลาก|ถล่ม|blocked|flood|landslide/i.test(text)) {
+      reply = '⚠️ [Offline] รับทราบรายงาน — ใช้ปุ่ม "Add Road Closure" บนแผนที่เพื่อปักหมุดจุดเสี่ยงได้โดยตรง (Typhoon AI ไม่พร้อม)';
+    } else if (/จัดสรร|เรือ|ทรัพยากร/i.test(text)) {
+      reply = '[Offline] เปิด Demo Resource Simulation...';
       toolCall = { name: 'optimizeAllocation', arguments: {} };
-    } else if (l.includes('เส้น b') || l.includes('ทล.118')) {
-      reply = '🚧 <strong>เส้นทาง B:</strong> น้ำท่วมปานกลาง ความเสี่ยง 48% ควรระวังสะพานข้ามห้วย';
+    } else if (/เส้น|route|ปลอดภัย|เสี่ยง|ความเสี่ยง/i.test(text) && ctx?.routes?.length) {
+      const active = ctx.routes.find(r => r.id === ctx.activeRouteId) ?? ctx.routes[0];
+      reply = `[Offline] ${active.name ?? active.id}: ความเสี่ยง ${active.risk}% (ML model) — กด 🔍 XAI เพื่อดูเหตุผลละเอียด`;
     }
-    setChatMessages(p => [...p, { role: 'ai', html: reply, toolCall, time: clock.slice(0, 5) }]);
+
+    setChatMessages(p => [...p, { role: 'ai', html: reply, toolCall, time: clock.slice(0, 5), isOffline: true }]);
     if (toolCall) executeAiTool(toolCall);
   };
 
@@ -1803,7 +1831,12 @@ export default function App() {
               <div className="chat-panel panel-section">
                 <div className="section-header" style={{ paddingBottom: 5 }}>
                   <span className="section-title">Typhoon AI</span>
-                  <span className="section-badge">ผู้ช่วยปฏิบัติการ</span>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <span className="section-badge">ผู้ช่วยปฏิบัติการ</span>
+                    <span style={{ fontSize: 8, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: briefing.typhoonStatus === 'live' ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.1)', color: briefing.typhoonStatus === 'live' ? 'var(--safe)' : 'var(--text-3)', border: `1px solid ${briefing.typhoonStatus === 'live' ? 'var(--safe)' : 'var(--border)'}` }}>
+                      {briefing.typhoonStatus === 'live' ? '● LIVE AI' : briefing.typhoonStatus === 'offline' ? '○ OFFLINE' : '○ PENDING'}
+                    </span>
+                  </div>
                 </div>
                 <div className="chat-messages-v2">
                   {chatMessages.map((msg, idx) => (
@@ -1811,6 +1844,11 @@ export default function App() {
                       {msg.html
                         ? <span dangerouslySetInnerHTML={{ __html: msg.html }} />
                         : msg.text}
+                      {msg.role === 'ai' && msg.isOffline && (
+                        <div style={{ fontSize: 8, color: 'var(--text-3)', marginTop: 2, fontStyle: 'italic' }}>
+                          คำตอบนี้มาจาก offline fallback ไม่ใช่ Typhoon AI สด
+                        </div>
+                      )}
                       <span className="btime">{msg.time}</span>
                     </div>
                   ))}
