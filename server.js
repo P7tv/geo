@@ -41,6 +41,8 @@ const TRAFFIC_WINDOW_MS    = 15 * 60 * 1000;  // 15-min rolling window for CCTV
 const TRAFFIC_QUERY_LIMIT  = 500;              // max Supabase rows per poll
 const RAIN_SATURATION_MM   = 25;              // rainfall cap for f_rain feature
 const FORECAST_DURATION    = 1;               // hours of TMD forecast to fetch
+const CR_LAT = 19.908, CR_LON = 99.832;      // Chiang Rai city — default coordinate anchor
+const HISTORICAL_FALLBACK_UNKNOWN = 0.50;     // neutral prior for areas without flood-freq data
 
 // --- API CONFIG & INITIALIZATION ---
 
@@ -84,28 +86,63 @@ const CAMERA_ROUTE_MAP = {
 
 // --- HELPERS ---
 
-const fetchLiveWeather = async () => {
-  try {
-    const lat = 19.908, lon = 99.832;
-    const bangkokNow = new Date(Date.now() + 7 * 3_600_000);
-    const date = bangkokNow.toISOString().slice(0, 10);
-    const headers = { Authorization: `Bearer ${TMD_TOKEN}`, Accept: 'application/json' };
-    for (const hour of [bangkokNow.getUTCHours(), 0]) {
-      try {
-        const url = `https://data.tmd.go.th/nwpapi/v1/forecast/location/hourly/at` +
-          `?lat=${lat}&lon=${lon}&fields=tc,rh,rain,ws10m,wd10m,cond&date=${date}&hour=${hour}&duration=${FORECAST_DURATION}`;
-        const resp = await fetch(url, { headers });
-        if (!resp.ok) continue;
-        const json = await resp.json().catch(() => null);
-        const data = json?.WeatherForecasts?.[0]?.forecasts?.[0]?.data;
-        if (data) return data;
-      } catch { continue; }
-    }
-    return null;
-  } catch {
-    return null;
+// Per-coordinate weather cache (keyed at ~10 km resolution). TTL 1 h.
+const _weatherAtCache = new Map();
+const WEATHER_AT_TTL = 60 * 60_000;
+
+// Fetch current-hour rainfall + conditions at an arbitrary lat/lon.
+// Primary: TMD NWP (Thailand coverage).  Fallback: Open-Meteo (global).
+// Returns { rain, tc, rh, ws10m, wd10m, _src: 'tmd'|'open-meteo' } or null.
+const fetchWeatherAt = async (lat = CR_LAT, lon = CR_LON) => {
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  const cached = _weatherAtCache.get(key);
+  if (cached && Date.now() - cached.ts < WEATHER_AT_TTL) return cached.data;
+
+  let result = null;
+  // TMD NWP (free hourly forecast, Thailand only)
+  if (TMD_TOKEN) {
+    try {
+      const bangkokNow = new Date(Date.now() + 7 * 3_600_000);
+      const date = bangkokNow.toISOString().slice(0, 10);
+      const headers = { Authorization: `Bearer ${TMD_TOKEN}`, Accept: 'application/json' };
+      for (const hour of [bangkokNow.getUTCHours(), 0]) {
+        try {
+          const url = `https://data.tmd.go.th/nwpapi/v1/forecast/location/hourly/at` +
+            `?lat=${lat}&lon=${lon}&fields=tc,rh,rain,ws10m,wd10m,cond&date=${date}&hour=${hour}&duration=${FORECAST_DURATION}`;
+          const resp = await fetch(url, { headers });
+          if (!resp.ok) continue;
+          const json = await resp.json().catch(() => null);
+          const data = json?.WeatherForecasts?.[0]?.forecasts?.[0]?.data;
+          if (data) { result = { ...data, _src: 'tmd' }; break; }
+        } catch { continue; }
+      }
+    } catch { /* fall through */ }
   }
+
+  // Open-Meteo global fallback (routes outside Thailand or TMD fail)
+  if (!result) {
+    try {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+        `&current=precipitation,temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m` +
+        `&timezone=Asia%2FBangkok`;
+      const r = await fetchWithTimeout(url, {}, 8000);
+      const j = await r.json();
+      const c = j.current;
+      if (c?.precipitation != null) {
+        result = {
+          rain: c.precipitation, tc: c.temperature_2m, rh: c.relative_humidity_2m,
+          ws10m: c.wind_speed_10m, wd10m: c.wind_direction_10m, _src: 'open-meteo',
+        };
+      }
+    } catch { /* no weather */ }
+  }
+
+  _weatherAtCache.set(key, { data: result, ts: Date.now() });
+  return result;
 };
+
+// Convenience wrapper for existing call sites that don't pass coordinates.
+const fetchLiveWeather = (lat = CR_LAT, lon = CR_LON) => fetchWeatherAt(lat, lon);
 
 const weatherToString = (w) => {
   if (!w) return null;
@@ -325,6 +362,27 @@ const fetchRain72h = async () => {
   }
 };
 
+// Fetch 72-hour accumulated precipitation at an arbitrary point — for dynamic routes whose
+// midpoints don't match the precomputed A/B/C coords. Cached 1 h at ~10 km resolution.
+const _rain72hAtCache = new Map();
+const fetchRain72hAt = async (lat, lon) => {
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  const cached = _rain72hAtCache.get(key);
+  if (cached && Date.now() - cached.ts < 60 * 60_000) return cached.val;
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+      `&hourly=precipitation&past_days=3&forecast_days=0&timezone=Asia%2FBangkok`;
+    const r = await fetchWithTimeout(url, {}, 8000);
+    const j = await r.json();
+    const val = +((j.hourly?.precipitation ?? []).slice(-72).reduce((s, v) => s + (v ?? 0), 0)).toFixed(1);
+    _rain72hAtCache.set(key, { val, ts: Date.now() });
+    return val;
+  } catch (e) {
+    console.warn('fetchRain72hAt:', e.message);
+    return null;
+  }
+};
+
 // Route → primary district mapping for HistoricalIncident lookup
 const ROUTE_DISTRICT = { A: 'แม่สาย', B: 'เทิง', C: 'เวียงป่าเป้า' };
 
@@ -384,35 +442,57 @@ const fetchGistdaCurrentFlood = async () => {
   }
 };
 
-const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, rain72h = null, floodFreq = null, soilBase = null) => {
-  // FloodExposure (0.45): fraction of route intersecting current GISTDA flood polygons
-  const f_flood_exposure = floodExposure ?? 0.30;
+// dam/traffic are monitoring context — they do NOT appear in the risk formula.
+// Kept as params for call-site compatibility; they only contribute to the context string.
+const predictRouteRisk = (routeId, weather, floodExposure, _damLevels, _traffic, rain72h = null, floodFreq = null, soilBase = null) => {
+  // ── f_flood_exposure (0.45) ───────────────────────────────────────────────────
+  // Fraction of route points inside current GISTDA flood/7days polygons.
+  // Fallback 0 (assume no flooding) when data is unavailable — never inflate to a flat prior.
+  const f_flood_exposure     = floodExposure ?? 0;
+  const floodExposureSrc     = floodExposure != null ? 'live' : 'offline-assumed-zero';
 
-  // ForecastRain (0.25): TMD NWP hourly rain intensity normalized by saturation cap
-  const f_forecast_rain  = Math.min((weather?.rain ?? 0) / RAIN_SATURATION_MM, 1);
+  // ── f_forecast_rain (0.25) ────────────────────────────────────────────────────
+  // Current-hour rainfall at the ROUTE's own location (caller fetches per route midpoint).
+  // Fallback 0 when no weather data. TMD primary, Open-Meteo global fallback.
+  const f_forecast_rain      = Math.min((weather?.rain ?? 0) / RAIN_SATURATION_MM, 1);
+  const forecastRainSrc      = weather ? (weather._src ?? 'tmd') : 'offline-assumed-zero';
 
-  // HistoricalIncident (0.20): GISTDA Sphere disaster-recurring API → fallback static
-  const f_historical = floodFreq
-    ?? (CR_HISTORICAL_INCIDENTS[ROUTE_DISTRICT[routeId]] ?? 0.60);
+  // ── f_historical (0.20) ───────────────────────────────────────────────────────
+  // Area-weighted GISTDA flood-freq patches (2011-2024) per route bbox.
+  // Fallback: static district table for A/B/C; neutral 0.50 prior for unknown/dynamic routes.
+  const f_historical         = floodFreq
+    ?? (CR_HISTORICAL_INCIDENTS[ROUTE_DISTRICT[routeId]]
+        ?? HISTORICAL_FALLBACK_UNKNOWN);
+  const historicalSrc        = floodFreq != null ? 'live'
+    : ROUTE_DISTRICT[routeId]                    ? 'static-district'
+    :                                              'fallback-neutral';
 
-  // SoilRisk (0.10): LDD PiP soil base (40%) + Open-Meteo 72h rainfall saturation (60%)
-  const lddBase   = soilBase ?? 0.50;
-  const rainSat   = rain72h != null ? Math.min(rain72h / RAIN72H_SAT_MM, 1.0) : lddBase;
-  const f_soil    = +(lddBase * 0.4 + rainSat * 0.6).toFixed(3);
+  // ── f_soil (0.10) ─────────────────────────────────────────────────────────────
+  // LDD PiP drainage risk (40%) + Open-Meteo 72h accumulated rain at route location (60%).
+  const lddBase              = soilBase ?? 0.50;
+  const rainSat              = rain72h != null ? Math.min(rain72h / RAIN72H_SAT_MM, 1.0) : lddBase;
+  const f_soil               = +(lddBase * 0.4 + rainSat * 0.6).toFixed(3);
+  const soilSrc              = soilBase != null
+    ? (rain72h != null ? 'live' : 'ldd-only')
+    : 'fallback';
 
-  // Weighted sum per proposal formula
+  // ── Weighted sum (formula unchanged) ─────────────────────────────────────────
   const raw = 0.45 * f_flood_exposure
             + 0.25 * f_forecast_rain
             + 0.20 * f_historical
             + 0.10 * f_soil;
 
-  // Scale [0,1] weighted output → sigmoid → [0, 99]
   const risk  = Math.min(Math.round(sigmoid(raw * 6 - 2.5) * 99), 99);
   const depth = Math.max(0.05, (risk / 65)).toFixed(2);
 
-  // Data completeness → confidence
-  const sources = [weather, floodExposure != null, damLevels, traffic].filter(Boolean).length;
-  const confidence = Math.round((sources / 4) * 100);
+  // Confidence = fraction of the 4 formula features backed by live data
+  const liveFeatures = [
+    floodExposure != null,   // f_flood_exposure
+    weather != null,         // f_forecast_rain
+    floodFreq != null,       // f_historical
+    soilBase != null,        // f_soil (ldd component)
+  ];
+  const confidence = Math.round(liveFeatures.filter(Boolean).length / 4 * 100);
 
   return {
     risk,
@@ -424,11 +504,20 @@ const predictRouteRisk = (routeId, weather, floodExposure, damLevels, traffic, r
       f_historical:     +f_historical.toFixed(3),
       f_soil:           +f_soil.toFixed(3),
     },
+    featureSources: {
+      floodExposure: floodExposureSrc,
+      forecastRain:  forecastRainSrc,
+      historical:    historicalSrc,
+      soil:          soilSrc,
+    },
   };
 };
 
+// Risk formula factors: f_flood_exposure(0.45) + f_forecast_rain(0.25) + f_historical(0.20) + f_soil(0.10)
+// dam/traffic are monitoring context signals — not part of the risk formula.
 const buildContext = (weather, traffic, routeRisks) => {
   const wStr = weather ? weatherToString(weather) : 'ไม่มีข้อมูลอากาศ (TMD offline)';
+  // traffic = monitoring context (CCTV congestion) — ไม่ใช่ risk factor ในสูตร
   const tStr = traffic
     ? ['A', 'B', 'C'].map(id => {
         const t = traffic[id];
@@ -436,9 +525,18 @@ const buildContext = (weather, traffic, routeRisks) => {
       }).join(' | ')
     : 'ไม่มีข้อมูล CCTV (Supabase offline)';
   const rStr = routeRisks
-    ? `A เสี่ยง ${routeRisks.A?.risk ?? '-'}%, B เสี่ยง ${routeRisks.B?.risk ?? '-'}%, C เสี่ยง ${routeRisks.C?.risk ?? '-'}%`
+    ? ['A','B','C'].map(id => {
+        const r = routeRisks[id];
+        if (!r) return `${id}: ไม่มีข้อมูล`;
+        const f = r.features ?? {};
+        return `เส้นทาง ${id}: ความเสี่ยง ${r.risk}%` +
+          ` | พื้นที่น้ำท่วมล่าสุด 7 วัน ${((f.f_flood_exposure ?? 0) * 100).toFixed(0)}%` +
+          ` | ฝนคาดการณ์ ${((f.f_forecast_rain ?? 0) * 100).toFixed(0)}%` +
+          ` | ประวัติน้ำท่วมพื้นที่ ${((f.f_historical ?? 0) * 100).toFixed(0)}%` +
+          ` | ความเสี่ยงดิน ${((f.f_soil ?? 0) * 100).toFixed(0)}%`;
+      }).join('\n')
     : 'ไม่มีข้อมูลเส้นทาง';
-  return `[อากาศ TMD]: ${wStr}\n[จราจร CCTV]: ${tStr}\n[ความเสี่ยงน้ำท่วม NetworkX A*]: ${rStr}`;
+  return `[สภาพอากาศ TMD]: ${wStr}\n[จราจร CCTV (monitoring)]: ${tStr}\n[ความเสี่ยงน้ำท่วม (ML model)]: ${rStr}`;
 };
 
 // ── External data metadata — Chiang Rai Province ─────────────────────────────
@@ -486,7 +584,8 @@ const fetchWaterLevels = async () => {
 // thaiwater.net มีเฉพาะเขื่อนใหญ่ 17 แห่ง ไม่มีเขื่อนในเชียงราย
 // ใช้ แม่งัด (id=53) upstream จากเชียงราย เป็น dam pressure proxy
 const DAM_META = [
-  { id: 53, name: 'เขื่อนแม่งัดสมบูรณ์ชล (upstream proxy)', capacity_mcm: 265, lat: 19.163, lon: 98.934 },
+  // upstream proxy for Chiang Rai watershed — actual dam is in Chiang Mai province
+  { id: 53, name: 'เขื่อนแม่งัดสมบูรณ์ชล', capacity_mcm: 265, lat: 19.163, lon: 98.934 },
 ];
 
 // Shelter data cached 1 hour (Overpass rate-limited)
@@ -711,38 +810,56 @@ ${context}`;
 
 // AI Situation Briefing (Typhoon)
 app.get('/api/ai/briefing', async (_req, res) => {
-  if (!typhoon) return res.status(503).json({ error: 'Typhoon AI not configured — set TYPHOON_API_KEY' });
-
-  try {
-    const [weather, traffic] = await Promise.all([fetchLiveWeather(), fetchLiveTraffic()]);
-    const context = buildContext(weather, traffic, null);
-
-    // คำนวณ alert_level จากข้อมูลจริง
-    let alert_level = 1;
-    if (traffic) {
-      if (traffic.C?.congestion_level === 'blocked' || traffic.B?.congestion_level === 'blocked') alert_level = 3;
-      else if (traffic.B?.congestion_level === 'warning') alert_level = 2;
-    }
-    if (weather?.rain != null && weather.rain > 15) alert_level = Math.max(alert_level, 2);
-
-    const completion = await typhoon.chat.completions.create({
-      model: 'typhoon-v2.5-30b-a3b-instruct',
-      messages: [
-        {
-          role: 'system',
-          content: 'คุณคือระบบสรุปสถานการณ์ภัยพิบัติเชียงราย (4 อำเภอ: เมือง แม่สาย เทิง เวียงป่าเป้า) สรุป 3-4 ประโยคภาษาไทย ระบุเวลา สภาพอากาศ จราจร และแนะนำเส้นทาง อิง CONTEXT เท่านั้น',
-        },
-        { role: 'user', content: `[CONTEXT]\n${context}\n\nสรุปสถานการณ์:` },
-      ],
-      max_tokens: 300,
-      temperature: 0.6,
+  if (!typhoon) {
+    return res.json({
+      briefing: null, alert_level: 1, generated_at: null,
+      typhoonStatus: 'offline', fallbackReason: 'TYPHOON_API_KEY not configured',
     });
+  }
 
+  const [weather, traffic] = await Promise.all([fetchLiveWeather(), fetchLiveTraffic()]);
+  const context = buildContext(weather, traffic, null);
+
+  // alert_level from live sensor data (independent of AI)
+  let alert_level = 1;
+  if (traffic) {
+    if (traffic.C?.congestion_level === 'blocked' || traffic.B?.congestion_level === 'blocked') alert_level = 3;
+    else if (traffic.B?.congestion_level === 'warning') alert_level = 2;
+  }
+  if (weather?.rain != null && weather.rain > 15) alert_level = Math.max(alert_level, 2);
+
+  // Wrap Typhoon call in AbortController so a socket close / timeout is caught cleanly
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 20_000);   // 20 s hard cap
+  try {
+    const completion = await typhoon.chat.completions.create(
+      {
+        model: 'typhoon-v2.5-30b-a3b-instruct',
+        messages: [
+          { role: 'system', content: 'คุณคือระบบสรุปสถานการณ์ภัยพิบัติเชียงราย (4 อำเภอ: เมือง แม่สาย เทิง เวียงป่าเป้า) สรุป 3-4 ประโยคภาษาไทย ระบุสภาพอากาศ จราจร และแนะนำเส้นทาง อิง CONTEXT เท่านั้น' },
+          { role: 'user', content: `[CONTEXT]\n${context}\n\nสรุปสถานการณ์:` },
+        ],
+        max_tokens: 300,
+        temperature: 0.6,
+      },
+      { signal: ctrl.signal },
+    );
+    clearTimeout(timer);
     const briefing = completion.choices[0].message.content.trim();
-    res.json({ briefing, generated_at: new Date().toISOString(), alert_level });
+    res.json({ briefing, generated_at: new Date().toISOString(), alert_level, typhoonStatus: 'live' });
   } catch (error) {
-    console.error('Typhoon briefing error:', error.message);
-    res.status(500).json({ error: error.message });
+    clearTimeout(timer);
+    const isTimeout = error.name === 'AbortError' || error.code === 'ECONNRESET' || error.message?.includes('socket');
+    const reason    = isTimeout ? 'Typhoon API timeout / socket closed' : error.message;
+    console.error('Typhoon briefing error:', reason);
+    // Return alert_level from live sensors even when AI fails — never block UI
+    res.json({
+      briefing: null,
+      alert_level,
+      generated_at: null,
+      typhoonStatus: 'offline',
+      fallbackReason: reason,
+    });
   }
 });
 
@@ -775,9 +892,23 @@ app.post('/api/explain', async (req, res) => {
   }
 
   const routeSummary = routes.map(r => {
-    const f = r.features ?? {};
-    return `เส้นทาง ${r.id}: ความเสี่ยง ${r.risk}% | FloodExposure ${((f.f_flood_exposure ?? 0) * 100).toFixed(0)}% | ForecastRain ${((f.f_forecast_rain ?? 0) * 100).toFixed(0)}% | HistoricalIncident ${((f.f_historical ?? 0) * 100).toFixed(0)}% | SoilRisk ${((f.f_soil ?? 0) * 100).toFixed(0)}%`;
+    const f   = r.features ?? {};
+    const src = r.routingSource ? ` (engine: ${r.routingSource})` : '';
+    const blk = (r.blockedPenalty ?? 0) > 0 ? ` | จุดปิดถนน: บวกโทษ +${r.blockedPenalty}%` : '';
+    const dist = r.distanceKm ? ` | ระยะทาง: ${r.distanceKm} กม.` : '';
+    return (
+      `${r.name ?? r.id}${src}: ความเสี่ยง ${r.risk}% ความปลอดภัย ${r.safety ?? (100 - r.risk)}%${dist}` +
+      ` | พื้นที่น้ำท่วมล่าสุด 7 วัน: ${((f.f_flood_exposure ?? 0) * 100).toFixed(0)}%` +
+      ` | ฝนคาดการณ์ TMD: ${((f.f_forecast_rain ?? 0) * 100).toFixed(0)}%` +
+      ` | ประวัติน้ำท่วมพื้นที่ (2011-2024): ${((f.f_historical ?? 0) * 100).toFixed(0)}%` +
+      ` | ความชุ่มชื้นดิน LDD+72h: ${((f.f_soil ?? 0) * 100).toFixed(0)}%${blk}`
+    );
   }).join('\n');
+
+  const isSingleRoute = routes.length === 1;
+  const userPrompt = isSingleRoute
+    ? `อธิบายว่าทำไมเส้นทางนี้ถึงมีความเสี่ยงในระดับนี้ โดยอ้างอิงปัจจัยที่มีผลมากที่สุด 2-3 ปัจจัย และสรุปว่าควรใช้เส้นทางนี้หรือไม่:\n${routeSummary}`
+    : `อธิบายความเสี่ยงและแนะนำเส้นทางที่เหมาะสมที่สุดจากข้อมูลต่อไปนี้:\n${routeSummary}`;
 
   try {
     const completion = await typhoon.chat.completions.create({
@@ -785,15 +916,12 @@ app.post('/api/explain', async (req, res) => {
       messages: [
         {
           role: 'system',
-          content: 'คุณคือระบบอธิบายการตัดสินใจ AI (Explainable AI) สำหรับระบบนำทางเลี่ยงน้ำท่วมเชียงราย อธิบายเหตุผลคะแนนความเสี่ยงแต่ละเส้นทาง 3-5 ประโยคภาษาไทย ระบุปัจจัยหลักที่มีผล',
+          content: 'คุณคือระบบอธิบายการตัดสินใจ AI (Explainable AI) สำหรับระบบนำทางเลี่ยงน้ำท่วมเชียงราย อธิบายเหตุผลคะแนนความเสี่ยง 3-4 ประโยคภาษาไทย ระบุปัจจัยหลักที่มีผล ใช้ชื่อปัจจัยภาษาไทย ไม่ใช้ศัพท์เทคนิค',
         },
-        {
-          role: 'user',
-          content: `อธิบายความเสี่ยงและแนะนำเส้นทางที่เหมาะสมที่สุดจากข้อมูลต่อไปนี้:\n${routeSummary}`,
-        },
+        { role: 'user', content: userPrompt },
       ],
-      max_tokens: 400,
-      temperature: 0.5,
+      max_tokens: 300,
+      temperature: 0.4,
     });
     res.json({ explanation: completion.choices[0].message.content.trim(), generated_at: new Date().toISOString() });
   } catch (err) {
@@ -887,12 +1015,18 @@ try {
   console.warn('⚠ flood_routes.geojson not found — will use static geometry fallback');
 }
 
+// Compute geometry midpoint [[lon,lat],...] → {lat, lon}
+const geomMidpoint = (coords) => {
+  const mid = coords[Math.floor(coords.length / 2)];
+  return { lat: mid[1], lon: mid[0] };
+};
+
 app.get('/api/flood-routes', async (_req, res) => {
   try {
-    // Fetch all live sensor data in parallel
-    const [weather, traffic, rain72hMap, gistdaFeatures, damResults,
+    // Fetch shared data in parallel; per-route weather fetched inside the loop (cached by coord)
+    const [traffic, rain72hMap, gistdaFeatures, damResults,
            freqFeatA, freqFeatB, freqFeatC] = await Promise.all([
-      fetchLiveWeather(), fetchLiveTraffic(), fetchRain72h(),
+      fetchLiveTraffic(), fetchRain72h(),
       fetchGistdaCurrentFlood(),
       Promise.allSettled(DAM_META.map(fetchDamLevel)),
       fetchFloodFreqFeatures('A'), fetchFloodFreqFeatures('B'), fetchFloodFreqFeatures('C'),
@@ -903,59 +1037,50 @@ app.get('/api/flood-routes', async (_req, res) => {
       .filter(Boolean);
 
     const result = {};
+    let tmdSrcSeen = null;  // track weather source for dataStatus
+
+    const scoreRoute = async (id, points, extraProps) => {
+      const midpt    = geomMidpoint(points.map(p => [p.lon, p.lat]));
+      const weather  = await fetchWeatherAt(midpt.lat, midpt.lon);
+      if (weather?._src && !tmdSrcSeen) tmdSrcSeen = weather._src;
+      const exposure   = gistdaFloodCache.data !== null
+        ? routeFloodExposure(points, gistdaFeatures) : null;
+      const historical = computeHistoricalRisk(points, freqFeatMap[id]);
+      const soilBase   = computeRouteSoilRisk(points);
+      const ml = predictRouteRisk(id, weather, exposure, damLevels.length ? damLevels : null,
+        traffic, rain72hMap[id] ?? null, historical, soilBase);
+      return { ...extraProps, points, risk: ml.risk, depth: ml.depth_est, features: ml.features };
+    };
 
     if (floodRoutesGeoJSON) {
-      // Use real A* geometry from flood_routes.geojson
       for (const feat of floodRoutesGeoJSON.features) {
         const id     = feat.properties.route_id;
-        const coords = feat.geometry.coordinates; // [[lon, lat], ...]
+        const coords = feat.geometry.coordinates;
         const points = coords.map(([lon, lat]) => ({ lat, lon }));
-        const exposure   = routeFloodExposure(points, gistdaFeatures);
-        const historical = computeHistoricalRisk(points, freqFeatMap[id]);
-        const soilBase   = computeRouteSoilRisk(points);
-        const ml = predictRouteRisk(id, weather, exposure,
-          damLevels.length ? damLevels : null,
-          traffic, rain72hMap[id] ?? null, historical, soilBase);
-        result[id] = {
-          name:         feat.properties.name,
-          distance_km:  feat.properties.distance_km,
+        result[id] = await scoreRoute(id, points, {
+          name: feat.properties.name, distance_km: feat.properties.distance_km,
           duration_min: Math.round(feat.properties.distance_km / 45 * 60),
-          points:       points,
-          risk:         ml.risk,
-          depth:        ml.depth_est,
-          algorithm:    'NetworkX A* (OSM PBF — flood-weighted)',
-          features:     ml.features,
-          graph_risk:   feat.properties.risk_pct,
-        };
+          algorithm: 'NetworkX A* (OSM PBF — flood-weighted)',
+          graph_risk: feat.properties.risk_pct,
+        });
       }
     } else {
-      // Fallback to static geometry when geojson not available
       for (const [id, geo] of Object.entries(FLOOD_ROUTE_GEOMETRY)) {
-        const points     = geo.coords.map(([lon, lat]) => ({ lat, lon }));
-        const exposure   = routeFloodExposure(points, gistdaFeatures);
-        const historical = computeHistoricalRisk(points, freqFeatMap[id]);
-        const soilBase   = computeRouteSoilRisk(points);
-        const ml = predictRouteRisk(id, weather, exposure,
-          damLevels.length ? damLevels : null,
-          traffic, rain72hMap[id] ?? null, historical, soilBase);
-        result[id] = {
-          name:         geo.name,
-          distance_km:  geo.distance_km,
+        const points = geo.coords.map(([lon, lat]) => ({ lat, lon }));
+        result[id] = await scoreRoute(id, points, {
+          name: geo.name, distance_km: geo.distance_km,
           duration_min: Math.round(geo.distance_km / 45 * 60),
-          points:       points,
-          risk:         ml.risk,
-          depth:        ml.depth_est,
-          algorithm:    'static geometry (fallback)',
-          features:     ml.features,
-        };
+          algorithm: 'static geometry (fallback)',
+        });
       }
     }
 
     // Build per-request data source status flags
     const anyDamOnline = damResults.some(r => r.status === 'fulfilled' && r.value?.status === 'online');
+    const tmdStatus = tmdSrcSeen === 'tmd' ? 'live' : tmdSrcSeen === 'open-meteo' ? 'fallback' : 'offline';
     const dataStatus = {
       gistdaFlood: gistdaFloodCache.lastStatus,
-      tmdForecast: weather         ? 'live'    : 'offline',
+      tmdForecast: tmdStatus,
       floodFreq:   floodFreqFeatCache.lastStatus,
       lddSoil:     SOIL_POLYGONS.length > 0 ? 'local' : 'fallback',
       rain72h:     rain72hCache.lastStatus,
@@ -1030,8 +1155,10 @@ function blockedDetails(points, blockedPoints) {
   };
 }
 
-// Score precomputed A/B/C routes and return as dynamic-route shape (OSRM failure fallback)
-async function buildFixedFallbackRoutes(weather, gistdaFeatures, rain72hMap, damLevels, rain72hAvg) {
+// Score precomputed A/B/C routes and return as dynamic-route shape (OSRM failure fallback).
+// weather is already fetched at the request midpoint by the caller.
+async function buildFixedFallbackRoutes(weather, gistdaFeatures, damLevels) {
+  const rain72hMap = await fetchRain72h();  // uses cached A/B/C midpoints
   const [freqFeatA, freqFeatB, freqFeatC] = await Promise.all(
     ['A', 'B', 'C'].map(fetchFloodFreqFeatures)
   );
@@ -1051,11 +1178,14 @@ async function buildFixedFallbackRoutes(weather, gistdaFeatures, rain72hMap, dam
       name = geo.name;
       distanceKm = geo.distance_km;
     }
-    const exposure   = routeFloodExposure(points, gistdaFeatures);
+    const midpt    = geomMidpoint(points.map(p => [p.lon, p.lat]));
+    const wxRoute  = await fetchWeatherAt(midpt.lat, midpt.lon);
+    const exposure = gistdaFloodCache.data !== null
+      ? routeFloodExposure(points, gistdaFeatures) : null;
     const historical = computeHistoricalRisk(points, freqFeatMap[id]);
     const soilBase   = computeRouteSoilRisk(points);
-    const ml = predictRouteRisk(id, weather, exposure, damLevels.length ? damLevels : null, null,
-      rain72hMap[id] ?? rain72hAvg, historical, soilBase);
+    const ml = predictRouteRisk(id, wxRoute, exposure, damLevels.length ? damLevels : null, null,
+      rain72hMap[id] ?? null, historical, soilBase);
     routes.push({
       id, name,
       distanceKm,
@@ -1112,8 +1242,10 @@ async function isLocalGraphAvailable() {
   return _localGraphAvailable;
 }
 
-// Score routes from either local graph or OSRM into the standard shape
-async function scoreRawRoutes(rawRoutes, weather, gistdaFeatures, rain72hAvg, damLevels, blockedPoints) {
+// Score routes from either local graph or OSRM into the standard shape.
+// `weather` is already fetched at the start/end midpoint by the caller (per-request area).
+// `rain72h` is fetched here per-route centroid (not the A/B/C average).
+async function scoreRawRoutes(rawRoutes, weather, gistdaFeatures, _rain72hAvg, damLevels, blockedPoints) {
   return Promise.all(rawRoutes.map(async (r, i) => {
     const coords = r.geometry.coordinates;
     if (!coords?.length) return null;
@@ -1122,12 +1254,19 @@ async function scoreRawRoutes(rawRoutes, weather, gistdaFeatures, rain72hAvg, da
       Math.min(...coords.map(c => c[0])), Math.min(...coords.map(c => c[1])),
       Math.max(...coords.map(c => c[0])), Math.max(...coords.map(c => c[1])),
     ];
-    const freqFeats  = await fetchFloodFreqForBbox(bbox);
-    const exposure   = routeFloodExposure(points, gistdaFeatures);
+    // Per-route centroid for rain72h (not the shared A/B/C average)
+    const centLat = (bbox[1] + bbox[3]) / 2, centLon = (bbox[0] + bbox[2]) / 2;
+    const [freqFeats, rain72hHere] = await Promise.all([
+      fetchFloodFreqForBbox(bbox),
+      fetchRain72hAt(centLat, centLon),
+    ]);
+    // Flood exposure is null when GISTDA data was never loaded (not merely empty)
+    const exposure   = gistdaFloodCache.data !== null
+      ? routeFloodExposure(points, gistdaFeatures) : null;
     const historical = computeHistoricalRisk(points, freqFeats);
     const soilBase   = computeRouteSoilRisk(points);
     const ml         = predictRouteRisk('DYN' + i, weather, exposure,
-                         damLevels.length ? damLevels : null, null, rain72hAvg, historical, soilBase);
+                         damLevels.length ? damLevels : null, null, rain72hHere, historical, soilBase);
     const closure    = blockedDetails(points, blockedPoints);
     return {
       id: 'DYN' + i, name: 'Route ' + (i + 1),
@@ -1136,6 +1275,7 @@ async function scoreRawRoutes(rawRoutes, weather, gistdaFeatures, rain72hAvg, da
       risk:   Math.min(ml.risk + closure.blockedPenalty, 99),
       safety: Math.max(100 - ml.risk - closure.blockedPenalty, 1),
       features: ml.features,
+      featureSources: ml.featureSources,
       geometry: r.geometry,
       points,
       ...closure,
@@ -1150,26 +1290,27 @@ app.post('/api/dynamic-routes', async (req, res) => {
       return res.status(400).json({ error: 'start and end coordinates are required' });
     }
 
+    // Weather fetched at start/end midpoint — correct for any area, not fixed to เมืองเชียงราย
+    const wxLat = (start.lat + end.lat) / 2, wxLon = (start.lon + end.lon) / 2;
+
     // Fetch live data in parallel with the routing attempt
-    const [localOk, weather, gistdaFeatures, rain72hMap, damResults] = await Promise.all([
+    const [localOk, weather, gistdaFeatures, damResults] = await Promise.all([
       isLocalGraphAvailable(),
-      fetchLiveWeather(),
+      fetchWeatherAt(wxLat, wxLon),
       fetchGistdaCurrentFlood(),
-      fetchRain72h(),
       Promise.allSettled(DAM_META.map(fetchDamLevel)),
     ]);
+    // rain72hMap (A/B/C cached) no longer used for dynamic — per-route centroid fetch happens in scoreRawRoutes
 
-    const damLevels    = damResults.filter(r => r.status === 'fulfilled' && r.value?.percent != null).map(r => r.value);
-    const rain72hValues = Object.values(rain72hMap ?? {}).filter(v => typeof v === 'number');
-    const rain72hAvg   = rain72hValues.length ? rain72hValues.reduce((a, b) => a + b, 0) / rain72hValues.length : null;
+    const damLevels = damResults.filter(r => r.status === 'fulfilled' && r.value?.percent != null).map(r => r.value);
 
     const buildDataStatus = (roadGraph) => ({
       roadGraph,
       gistdaFlood: gistdaFloodCache.lastStatus,
-      tmdForecast: weather ? 'live' : 'offline',
+      tmdForecast: weather ? (weather._src === 'open-meteo' ? 'fallback' : 'live') : 'offline',
       floodFreq:   floodFreqFeatCache.lastStatus,
       lddSoil:     SOIL_POLYGONS.length > 0 ? 'local' : 'fallback',
-      rain72h:     rain72hCache.lastStatus,
+      rain72h:     'per-route',   // fetched individually per route centroid in scoreRawRoutes
     });
 
     // ── Tier 1: Local NetworkX graph ──────────────────────────────────────────
@@ -1194,7 +1335,7 @@ app.post('/api/dynamic-routes', async (req, res) => {
             .slice(0, routeCount);
 
           if (rawRoutes.length > 0) {
-            const scoredRaw  = await scoreRawRoutes(rawRoutes, weather, gistdaFeatures, rain72hAvg, damLevels, blockedPoints);
+            const scoredRaw  = await scoreRawRoutes(rawRoutes, weather, gistdaFeatures, null, damLevels, blockedPoints);
             const scored     = scoredRaw.filter(Boolean);
             const sortedRoutes = scored
               .sort((a, b) => a.risk - b.risk)
@@ -1238,7 +1379,7 @@ app.post('/api/dynamic-routes', async (req, res) => {
         .slice(0, Math.max(routeCount, 3))
         .map(r => ({ ...r, distance: r.distance, duration: r.duration }));
 
-      const scoredRaw  = await scoreRawRoutes(osrmRoutes, weather, gistdaFeatures, rain72hAvg, damLevels, blockedPoints);
+      const scoredRaw  = await scoreRawRoutes(osrmRoutes, weather, gistdaFeatures, null, damLevels, blockedPoints);
       const scored     = scoredRaw.filter(Boolean);
       const sortedRoutes = scored
         .sort((a, b) => a.risk - b.risk)
@@ -1268,7 +1409,7 @@ app.post('/api/dynamic-routes', async (req, res) => {
     // ── Tier 3: Precomputed A/B/C ─────────────────────────────────────────────
     const osrmReason = osrmResult ? (osrmResult.message ?? 'OSRM routing failed') : 'OSRM request timed out';
     console.warn('[dynamic-routes] OSRM unavailable:', osrmReason, '— serving precomputed fallback');
-    const fixedRoutes = await buildFixedFallbackRoutes(weather, gistdaFeatures, rain72hMap, damLevels, rain72hAvg);
+    const fixedRoutes = await buildFixedFallbackRoutes(weather, gistdaFeatures, damLevels);
     return res.json({
       routes: fixedRoutes,
       _meta: {

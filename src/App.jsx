@@ -497,10 +497,12 @@ export default function App() {
   const [isTyping, setIsTyping] = useState(false);
 
   const [gistdaRiskPoints, setGistdaRiskPoints] = useState(CR_RISK_POINTS);
+  const [gistdaLive, setGistdaLive] = useState(false); // true only when API returned (even empty)
 
   // External data sources
-  const [waterLevels, setWaterLevels]   = useState(null);
-  const [damLevels,   setDamLevels]     = useState(null);
+  const [waterLevels, setWaterLevels]       = useState(null);
+  const [showAllRiverLevels, setShowAllRiverLevels] = useState(false);
+  const [damLevels,   setDamLevels]         = useState(null);
   const [shelters,    setShelters]      = useState([]);
   const [tmdWarnings, setTmdWarnings]   = useState(null);
 
@@ -509,7 +511,7 @@ export default function App() {
     B: { vehicle_count: 0, avg_speed: 0, congestion_level: 'unknown', stopped_ratio: 0 },
     C: { vehicle_count: 0, avg_speed: 0, congestion_level: 'unknown', stopped_ratio: 0 },
   });
-  const [briefing, setBriefing] = useState({ text: '', alertLevel: 1, timestamp: '' });
+  const [briefing, setBriefing] = useState({ text: '', alertLevel: 1, timestamp: '', typhoonStatus: 'pending' });
   const [briefingLoading, setBriefingLoading] = useState(false);
 
   const [optimizerRunning, setOptimizerRunning] = useState(false);
@@ -555,10 +557,22 @@ export default function App() {
     setBriefingLoading(true);
     try {
       const data = await getAiBriefing();
+      const status = data.typhoonStatus ?? (data.briefing ? 'live' : 'offline');
+      setBriefing({
+        text:         data.briefing ?? '',
+        alertLevel:   data.alert_level ?? 1,
+        timestamp:    data.generated_at ?? '',
+        typhoonStatus: status,
+        fallbackReason: data.fallbackReason ?? null,
+      });
       if (data.briefing) {
-        setBriefing({ text: data.briefing, alertLevel: data.alert_level, timestamp: data.generated_at });
-        addToast('AI สรุปสถานการณ์สำเร็จ', 'success');
+        addToast('Typhoon AI สรุปสถานการณ์สำเร็จ', 'success');
+      } else {
+        addToast(`Typhoon AI offline — ${data.fallbackReason ?? 'ไม่ได้รับ response'}`, 'warn');
       }
+    } catch (e) {
+      setBriefing(prev => ({ ...prev, typhoonStatus: 'offline', fallbackReason: e.message }));
+      addToast('ไม่สามารถเชื่อมต่อ Typhoon AI', 'warn');
     } finally {
       setBriefingLoading(false);
     }
@@ -566,22 +580,73 @@ export default function App() {
 
   const fetchRouteExplanation = async () => {
     const routes = ['A', 'B', 'C']
-      .map(id => routePaths[id] ? { id, risk: routePaths[id].risk, features: routePaths[id].features } : null)
+      .map(id => routePaths[id] ? { id, name: `เส้นทาง ${id}`, risk: routePaths[id].risk, safety: 100 - routePaths[id].risk, features: routePaths[id].features, routingSource: 'precomputed' } : null)
       .filter(Boolean);
     if (routes.length === 0) { addToast('ยังไม่มีข้อมูลเส้นทาง — รอโหลดสักครู่', 'warn'); return; }
     try {
-      addToast('AI กำลังวิเคราะห์เหตุผลความเสี่ยง...', 'info');
+      addToast('AI กำลังวิเคราะห์เส้นทาง A/B/C...', 'info');
       const res = await fetch('http://localhost:3001/api/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routes }),
       });
       const data = await res.json();
       if (data.explanation) {
-        addLog('XAI Explanation', false, data.explanation.slice(0, 120));
-        addToast('AI อธิบายความเสี่ยงเส้นทางสำเร็จ', 'success');
+        addLog('XAI A/B/C', false, data.explanation.slice(0, 200));
+        addToast('AI อธิบายเส้นทาง A/B/C สำเร็จ', 'success');
       }
     } catch (_) { addToast('XAI endpoint ไม่ตอบสนอง', 'warn'); }
+  };
+
+  // Build client-side fallback explanation when Typhoon API is unavailable
+  const buildFallbackXAI = (route, routingSource) => {
+    const f = route.features ?? {};
+    const flood = Math.round((f.f_flood_exposure ?? 0) * 100);
+    const rain  = Math.round((f.f_forecast_rain  ?? 0) * 100);
+    const hist  = Math.round((f.f_historical     ?? 0) * 100);
+    const soil  = Math.round((f.f_soil           ?? 0) * 100);
+    const parts = [];
+    if (flood > 0) parts.push(`ตัดผ่านพื้นที่น้ำท่วม 7 วัน ${flood}%`);
+    else           parts.push(`ไม่ตัดผ่านพื้นที่น้ำท่วมล่าสุด`);
+    if (rain > 5)  parts.push(`ฝนคาดการณ์ ${rain}%`);
+    else           parts.push(`ฝนคาดการณ์ต่ำ`);
+    if (hist > 0)  parts.push(`ประวัติน้ำท่วมพื้นที่ ${hist}%`);
+    if (soil > 0)  parts.push(`ความชุ่มชื้นดิน ${soil}%`);
+    if ((route.blockedPenalty ?? 0) > 0) parts.push(`บวกโทษจุดปิดถนน +${route.blockedPenalty}%`);
+    const srcLabel = routingSource === 'local-graph' ? 'Local Graph' : routingSource === 'osrm' ? 'OSRM' : routingSource === 'precomputed' ? 'Precomputed' : 'ML';
+    return `${route.name ?? route.id} [${srcLabel}] ความเสี่ยง ${route.risk}%: ${parts.join(' · ')}`;
+  };
+
+  // Per-route XAI — works for both dynamic and precomputed routes
+  const fetchRouteXAI = async (route, routingSource = 'unknown') => {
+    const label = route.name ?? route.id;
+    addToast(`🔍 AI กำลังวิเคราะห์ ${label}...`, 'info');
+    const payload = {
+      id: route.id, name: label,
+      risk: route.risk, safety: route.safety ?? (100 - route.risk),
+      distanceKm: route.distanceKm ?? route.distance_km,
+      durationMin: route.durationMin ?? route.duration_min,
+      features: route.features ?? {},
+      blockedExposure: route.blockedExposure ?? 0,
+      blockedPenalty:  route.blockedPenalty  ?? 0,
+      routingSource,
+    };
+    try {
+      const res = await fetch('http://localhost:3001/api/explain', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routes: [payload] }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.explanation) {
+        addLog(`XAI: ${label}`, false, data.explanation.slice(0, 200));
+        addToast('AI อธิบายสำเร็จ — ดูใน Decision Log', 'success');
+      } else throw new Error(data.error ?? 'no explanation');
+    } catch (e) {
+      // Fallback: client-side explanation from factor values
+      const fallback = buildFallbackXAI(route, routingSource);
+      addLog(`XAI (offline): ${label}`, false, fallback);
+      addToast('Typhoon AI ไม่ตอบ — แสดง factor analysis แทน', 'warn');
+    }
   };
 
   const fetchGistdaFloodData = async (range = floodRange) => {
@@ -590,8 +655,10 @@ export default function App() {
       if (!res.ok) throw new Error(`GISTDA API ${res.status}`);
       const data = await res.json();
       const features = data?.features ?? [];
+      setGistdaLive(true); // API responded — hide hardcoded fallback regardless of count
       if (features.length === 0) {
-        addToast(`GISTDA: ไม่มีข้อมูลน้ำท่วม (${range})`, 'info');
+        addToast(`GISTDA: ไม่พบพื้นที่น้ำท่วม (${range})`, 'info');
+        setGistdaRiskPoints([]); // clear hardcoded fallback
         return;
       }
       const pts = features.map(f => {
@@ -838,7 +905,8 @@ export default function App() {
   }, [routeMode]);
 
   useEffect(() => {
-    setGistdaRiskPoints(CR_RISK_POINTS);
+    setGistdaRiskPoints([]);
+    setGistdaLive(false);
     fetchGistdaFloodData(floodRange);
   }, [floodRange]);
 
@@ -1007,8 +1075,14 @@ export default function App() {
           {hasTmdWarning
             ? `[TMD แจ้งเตือน] ${tmdAlertText}`
             : briefingLoading
-              ? 'กำลังประมวลผลสถานการณ์...'
-              : (briefing.text || 'ระบบพร้อมปฏิบัติการ — เชียงราย (เมือง · แม่สาย · เทิง · เวียงป่าเป้า)')}
+              ? 'กำลังรับสรุปสถานการณ์จาก Typhoon AI...'
+              : briefing.text
+                ? briefing.text
+                : briefing.typhoonStatus === 'offline'
+                  ? `⚠ Typhoon AI offline — แสดงระดับเฝ้าระวัง ${alertLevel} จากข้อมูลเซ็นเซอร์ (TMD/CCTV) เท่านั้น`
+                  : briefing.typhoonStatus === 'pending'
+                    ? 'กำลังเชื่อมต่อ Typhoon AI...'
+                    : 'ระบบพร้อม — กด รีเฟรช เพื่อรับสรุปสถานการณ์'}
         </span>
         {briefing.timestamp && !hasTmdWarning && (
           <span className="alert-bar-meta">{briefing.timestamp}</span>
@@ -1207,6 +1281,10 @@ export default function App() {
                                     nearest blocked point: {route.blockedDistanceM.toLocaleString()} m
                                   </div>
                                 )}
+                                <button
+                                  onClick={e => { e.stopPropagation(); fetchRouteXAI(route, dynRoutingSource ?? 'osrm'); }}
+                                  style={{ marginTop: 8, width: '100%', padding: '4px 0', fontSize: 10, fontWeight: 700, borderRadius: 4, cursor: 'pointer', background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)' }}
+                                >🔍 XAI — อธิบายเหตุผลความเสี่ยง</button>
                               </div>
                             )}
                           </div>
@@ -1361,7 +1439,7 @@ export default function App() {
 
                           {/* Actions */}
                           <div className="rc-actions" onClick={e => e.stopPropagation()}>
-                            <button className="rc-btn xai" onClick={fetchRouteExplanation}>🔍 XAI</button>
+                            <button className="rc-btn xai" onClick={() => fetchRouteXAI(route, 'precomputed')}>🔍 XAI</button>
                             <button
                               className="rc-btn override"
                               onClick={() => {
@@ -1543,6 +1621,10 @@ export default function App() {
                       <span style={{ color: (dr.features?.f_flood_exposure ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
                         ท่วม {Math.round((dr.features?.f_flood_exposure ?? 0) * 100)}%
                       </span>
+                      <button
+                        onClick={() => fetchRouteXAI(dr, dynRoutingSource ?? 'osrm')}
+                        style={{ marginLeft: 4, padding: '1px 7px', fontSize: 9, fontWeight: 700, borderRadius: 3, cursor: 'pointer', background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)' }}
+                      >🔍 XAI</button>
                     </div>
                   </div>
                 );
@@ -1560,6 +1642,12 @@ export default function App() {
                     <span style={{ color: (activeData?.features?.f_flood_exposure ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
                       ท่วม {Math.round((activeData?.features?.f_flood_exposure ?? 0) * 100)}%
                     </span>
+                    {activeData.risk != null && (
+                      <button
+                        onClick={() => fetchRouteXAI({ id: activeRoute, name: activeData.name, risk: activeData.risk, safety: 100 - activeData.risk, distanceKm: activeData.distance, durationMin: activeData.duration, features: activeData.features }, isPrecomputedFallback ? 'precomputed' : 'precomputed')}
+                        style={{ marginLeft: 4, padding: '1px 7px', fontSize: 9, fontWeight: 700, borderRadius: 3, cursor: 'pointer', background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)' }}
+                      >🔍 XAI</button>
+                    )}
                   </div>
                 </div>
               );
@@ -1598,10 +1686,20 @@ export default function App() {
               <div className="panel-section">
                 <div className="section-header">
                   <span className="section-title">River Levels</span>
-                  <span className="section-badge">กรมทรัพยากรน้ำ</span>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <span className="section-badge">กรมทรัพยากรน้ำ</span>
+                    {waterLevels && waterLevels.length > 4 && (
+                      <button
+                        onClick={() => setShowAllRiverLevels(v => !v)}
+                        style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', color: 'var(--blue-primary)' }}
+                      >
+                        {showAllRiverLevels ? 'ย่อ' : `ดูทั้งหมด (${waterLevels.length})`}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 {waterLevels
-                  ? waterLevels.map(st => {
+                  ? (showAllRiverLevels ? waterLevels : waterLevels.slice(0, 4)).map(st => {
                       const hasData = st.level != null;
                       const margin = (hasData && st.warning_level) ? st.warning_level - st.level : null;
                       const dangerPct = margin != null ? Math.max(0, Math.min(100, (1 - margin / 5.0) * 100)) : null;
@@ -1628,22 +1726,33 @@ export default function App() {
                 }
               </div>
 
-              {/* Dam levels */}
+              {/* Dam levels — HAII/ThaiWater monitoring, not part of risk formula */}
               <div className="panel-section">
                 <div className="section-header">
                   <span className="section-title">Dams</span>
-                  <span className="section-badge">กรมชลประทาน</span>
+                  <span className="section-badge">HAII / ThaiWater</span>
+                </div>
+                <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 6, fontStyle: 'italic' }}>
+                  Monitoring only — ไม่ส่งผลต่อ risk score
                 </div>
                 {damLevels
                   ? damLevels.map(dam => {
                       const pct = dam.percent;
                       const cls = pct == null ? '' : pct >= 100 ? 'danger' : pct >= 80 ? 'warn' : 'safe';
                       const pctColor = pct == null ? 'var(--text-3)' : pct >= 100 ? 'var(--danger)' : pct >= 80 ? 'var(--warn)' : 'var(--safe)';
+                      const statusColors = { online: 'var(--safe)', offline: 'var(--text-3)', nodata: 'var(--warn)', error: 'var(--danger)' };
                       return (
-                        <div key={dam.code} className="dam-card-v2">
+                        <div key={dam.id ?? dam.code} className="dam-card-v2">
                           <div className="dam-card-header">
                             <span className="dam-card-name">{dam.name}</span>
-                            <span className="dam-card-pct" style={{ color: pctColor }}>{pct != null ? `${pct}%` : '—'}</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              {dam.status && (
+                                <span style={{ fontSize: 8, fontFamily: 'var(--font-mono)', color: statusColors[dam.status] ?? 'var(--text-3)' }}>
+                                  {dam.status}
+                                </span>
+                              )}
+                              <span className="dam-card-pct" style={{ color: pctColor }}>{pct != null ? `${pct}%` : '—'}</span>
+                            </div>
                           </div>
                           <div className="dam-bar-track">
                             <div className={`dam-bar-fill ${cls}`} style={{ width: `${Math.min(pct ?? 0, 100)}%` }} />
@@ -1743,8 +1852,8 @@ export default function App() {
           <div className="gov-full-width-page">
             <div className="gov-page-header">
               <div className="gov-page-title">
-                <h2>วิเคราะห์สารสนเทศภูมิศาสตร์และข้อมูลดาวเทียม (Geospatial & Satellite Analysis)</h2>
-                <p>รายงานข้อมูลจุดเสี่ยงน้ำท่วมจังหวัดเชียงราย (4 อำเภอ) จาก GISTDA Flood Monitoring Layer (WMS + Open Data API)</p>
+                <h2>ติดตามสภาพน้ำท่วมและสภาพอากาศ (Geospatial Flood Monitoring & Weather Analysis)</h2>
+                <p>รายงานข้อมูลจุดเสี่ยงน้ำท่วมจังหวัดเชียงราย (4 อำเภอ) จาก GISTDA Flood Monitoring Layer (WMS + Open Data API) และข้อมูลฝนรายสถานี TMD</p>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <input
@@ -1792,8 +1901,12 @@ export default function App() {
                     <tbody>
                       {filteredRiskPoints.length === 0 ? (
                         <tr>
-                          <td colSpan="5" style={{ textAlign: 'center', color: 'var(--text-3)', padding: '20px' }}>
-                            ไม่พบข้อมูลจุดเสี่ยงตามเงื่อนไขที่ระบุ
+                          <td colSpan="5" style={{ textAlign: 'center', color: 'var(--text-3)', padding: '28px' }}>
+                            {!gistdaLive
+                              ? '⏳ กำลังโหลดข้อมูลจาก GISTDA API...'
+                              : geoSearch
+                                ? 'ไม่พบพื้นที่ตรงกับคำค้นหา'
+                                : '✅ ไม่พบพื้นที่น้ำท่วมใน จ.เชียงราย จาก GISTDA Flood API ในช่วงเวลานี้'}
                           </td>
                         </tr>
                       ) : (
@@ -1829,8 +1942,8 @@ export default function App() {
                 {/* TMD Rain Radar Card */}
                 <div className="radar-container">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-2)', fontFamily: 'var(--font-th)' }}>📡 ข้อมูลปริมาณฝนรายสถานี TMD (Forecast Monitoring)</h3>
-                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px' }}>TMD FORECAST</span>
+                    <h3 style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-2)', fontFamily: 'var(--font-th)' }}>🌧 ข้อมูลปริมาณฝนรายสถานี TMD (Station Rainfall Visualization)</h3>
+                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px' }}>TMD NWP LIVE</span>
                   </div>
 
                   <div className="radar-grid">
@@ -1892,7 +2005,9 @@ export default function App() {
                 <div className="gov-card">
                   <div className="gov-card-header">
                     <h3>GISTDA Flood Monitoring Layer</h3>
-                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px' }}>● CONNECTED</span>
+                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px' }}>
+                      {gistdaRiskPoints.length > 0 ? '● LAYER ACTIVE' : '○ Layer configured'}
+                    </span>
                   </div>
                   <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '11px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
@@ -1974,8 +2089,8 @@ export default function App() {
           <div className="gov-full-width-page">
             <div className="gov-page-header">
               <div className="gov-page-title">
-                <h2>การจัดสรรกำลังพลและกู้ชีพ (Logistics & Rescue Resource Planner)</h2>
-                <p>ระบบปัญญาประดิษฐ์วิเคราะห์เส้นทางน้ำท่วมและจัดส่งบุคลากรช่วยเหลือผู้ประสบภัยตามลำดับความเร่งด่วน</p>
+                <h2>จำลองการวางแผนกำลังพลกู้ภัย (Demo Resource Planning)</h2>
+                <p>เครื่องมือจำลองการจัดสรรทรัพยากรกู้ภัย — ข้อมูลจราจร CCTV/Supabase เป็น live, ตัวเลขกำลังพลและ optimizer เป็นการจำลองเพื่อสาธิต</p>
               </div>
               <button
                 className="mission-btn"
@@ -1983,7 +2098,7 @@ export default function App() {
                 onClick={runResourceOptimizer}
                 disabled={optimizerRunning}
               >
-                {optimizerRunning ? 'กำลังคำนวณการจัดสรร...' : '⚙️ รัน AI Resource Solver (Demo)'}
+                {optimizerRunning ? 'กำลังจำลอง...' : '⚗ รัน Demo Resource Simulation'}
               </button>
             </div>
 
@@ -2013,12 +2128,17 @@ export default function App() {
                   </div>
 
                   <div style={{ width: '100%' }}>
-                    <h4 style={{ fontSize: '11px', fontWeight: '700', marginBottom: '8px', color: 'var(--text-2)' }}>ตัวเลขจัดสรรทรัพยากรระดับภาคสนาม</h4>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <h4 style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-2)', margin: 0 }}>ตัวเลขจัดสรรทรัพยากร</h4>
+                      {resources.boats !== '—' && (
+                        <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: 'rgba(139,92,246,0.12)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.3)' }}>⚗ ข้อมูลจำลอง</span>
+                      )}
+                    </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
                       {[
                         { label: 'เรือท้องแบนกู้ชีพ', value: resources.boats, color: 'var(--safe)' },
                         { label: 'ทีมแพทย์/กู้ภัยหลัก', value: resources.teams, color: 'var(--blue-primary)' },
-                        { label: 'ยอดรอการช่วยเหลือ', value: `${resources.waiting} ราย`, color: 'var(--danger)' }
+                        { label: 'ยอดรอการช่วยเหลือ', value: resources.waiting === '—' ? '—' : `${resources.waiting} ราย`, color: 'var(--danger)' }
                       ].map(item => (
                         <div key={item.label} style={{ background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px 8px', textAlign: 'center' }}>
                           <div style={{ fontSize: '9px', color: 'var(--text-3)', marginBottom: '4px' }}>{item.label}</div>
@@ -2029,14 +2149,17 @@ export default function App() {
                   </div>
 
                   <div style={{ width: '100%', flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px', overflowY: 'auto' }}>
-                    <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', borderBottom: '1px solid var(--border)', paddingBottom: '4px', marginBottom: '6px' }}>SOLVER REAL-TIME VERBOSE LOGS:</div>
+                    <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', borderBottom: '1px solid var(--border)', paddingBottom: '4px', marginBottom: '6px', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>SIMULATION LOG (ข้อมูลจำลองเพื่อสาธิต):</span>
+                      <span style={{ color: '#a78bfa' }}>⚗ SIMULATED</span>
+                    </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
-                      <div>[INFO] AI solver engine v1.4 loaded parameters...</div>
-                      <div>[INFO] Graph matrices: 3 sectors, 12 flood nodes.</div>
-                      {optimizerProgress > 10 && <div style={{ color: 'var(--warn)' }}>[CALC] Simulation of path risk coefficient for Sector A completed.</div>}
-                      {optimizerProgress > 40 && <div style={{ color: 'var(--warn)' }}>[CALC] Re-routing vehicles to circumvent blocked Route C.</div>}
-                      {optimizerProgress > 70 && <div style={{ color: 'var(--blue-primary)' }}>[ALLO] Allocating teams from high altitude to lower floodplain...</div>}
-                      {optimizerProgress === 100 && <div style={{ color: 'var(--safe)' }}>[DONE] Resource solver task: evacuated 68 priority survivors successfully.</div>}
+                      <div style={{ color: 'var(--text-3)' }}>[SIMULATED] Demo solver engine loaded parameters...</div>
+                      <div style={{ color: 'var(--text-3)' }}>[SIMULATED] Graph matrices: 3 sectors, 12 flood nodes.</div>
+                      {optimizerProgress > 10 && <div style={{ color: 'var(--warn)' }}>[SIMULATED] Path risk coefficient for Sector A calculated.</div>}
+                      {optimizerProgress > 40 && <div style={{ color: 'var(--warn)' }}>[SIMULATED] Re-routing demo vehicles to circumvent Route C.</div>}
+                      {optimizerProgress > 70 && <div style={{ color: 'var(--blue-primary)' }}>[SIMULATED] Allocating demo teams to lower floodplain zones...</div>}
+                      {optimizerProgress === 100 && <div style={{ color: 'var(--safe)' }}>[SIMULATED] Demo complete — สาธิตเสร็จสิ้น</div>}
                     </div>
                   </div>
 
@@ -2046,7 +2169,8 @@ export default function App() {
               {/* Sectors side */}
               <div className="gov-card" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                 <div className="gov-card-header">
-                  <h3>สถิติและเป้าหมายการแบ่งเขตพื้นที่ (Sector Operational Metrics)</h3>
+                  <h3>Sector Operational Metrics</h3>
+                  <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: 'rgba(139,92,246,0.12)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.3)' }}>⚗ สถานการณ์ตัวอย่าง</span>
                 </div>
                 <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   
@@ -2074,15 +2198,14 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', fontSize: '10px', marginTop: '4px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '10px', marginTop: '4px' }}>
                         <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '4px 6px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-3)' }}>จราจร:</span> <strong style={{ color: 'var(--text-1)' }}>{sector.count} คัน</strong>
+                          <div style={{ fontSize: '8px', color: 'var(--text-3)', marginBottom: '1px' }}>CCTV Supabase live</div>
+                          <span style={{ color: 'var(--text-3)' }}>ยานพาหนะ:</span> <strong style={{ color: 'var(--text-1)' }}>{sector.count} คัน</strong>
                         </div>
                         <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '4px 6px', borderRadius: '4px' }}>
+                          <div style={{ fontSize: '8px', color: 'var(--text-3)', marginBottom: '1px' }}>CCTV Supabase live</div>
                           <span style={{ color: 'var(--text-3)' }}>ความเร็ว:</span> <strong style={{ color: 'var(--text-1)' }}>{sector.speed} กม/ชม</strong>
-                        </div>
-                        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '4px 6px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-3)' }}>ทีม:</span> <strong style={{ color: 'var(--text-1)' }}>1 ทีมหลัก</strong>
                         </div>
                       </div>
                     </div>
@@ -2101,8 +2224,8 @@ export default function App() {
           <div className="gov-full-width-page" style={{ background: 'var(--bg-panel)' }}>
             <div className="gov-page-header no-print">
               <div className="gov-page-title">
-                <h2>สรุปรายงานระดับผู้บริหาร (Executive Official Briefing)</h2>
-                <p>เอกสารสรุปสถานการณ์ระดับผู้ว่าราชการจังหวัดและอธิบดีกรมป้องกันและบรรเทาสาธารณภัย (พิมพ์ออกเป็นทางการได้)</p>
+                <h2>สรุปสถานการณ์ระดับผู้บริหาร (Executive Situation Briefing Template)</h2>
+                <p>เอกสารสรุปสถานการณ์น้ำท่วมระดับจังหวัด — ตัวอย่างรูปแบบรายงาน (Demo Report Template) ข้อมูลสดจาก GISTDA · TMD · Typhoon AI</p>
               </div>
               <button
                 className="mission-btn"
@@ -2120,22 +2243,31 @@ export default function App() {
                 <div style={{ textAlign: 'center', marginBottom: '20px' }}>
                   <div style={{ fontSize: '32px', filter: 'grayscale(1) sepia(100%) hue-rotate(0deg) saturate(1000%)' }}>🛡️</div>
                   <h2 style={{ fontSize: '14px', fontWeight: '800', marginTop: '10px', color: '#000', fontFamily: 'var(--font-th)' }}>
-                    ศูนย์บัญชาการสถานการณ์ภัยพิบัติเชียงรายร่วม (GISTDA & TMD & DDPM)
+                    รายงานสถานการณ์น้ำท่วมจังหวัดเชียงราย (GISTDA · TMD · DDPM)
                   </h2>
                   <p style={{ fontSize: '10px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    MEMORANDUM ON STATE EMERGENCY DISASTER MITIGATION
+                    FLOOD SITUATION BRIEFING — EXECUTIVE SUMMARY (DEMO TEMPLATE)
                   </p>
                 </div>
 
                 <div style={{ borderBottom: '2px solid #000', paddingBottom: '10px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#333' }}>
-                  <div><strong>ฉบับที่:</strong> GISTDA-CM-2026-05</div>
-                  <div><strong>วันที่รายงาน:</strong> {new Date().toLocaleDateString('th-TH')} ณ เวลา {clock}</div>
+                  <div><strong>ฉบับ:</strong> ตัวอย่างรายงาน (Demo Report)</div>
+                  <div><strong>วันที่:</strong> {new Date().toLocaleDateString('th-TH')} ณ เวลา {clock}</div>
                 </div>
 
                 <div style={{ fontSize: '12px', lineHeight: '1.8', color: '#222' }}>
-                  <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๑. สรุปภาพรวมสถานการณ์โดยปัญญาประดิษฐ์ (Typhoon AI Situational Intelligence)</h3>
-                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px', color: '#1e293b', fontStyle: 'italic', marginBottom: '20px' }}>
-                    "{briefing.text || 'ยังไม่มีสรุปสถานการณ์จาก Typhoon AI กรุณาคลิกรับบรีฟจากหน้าศูนย์หลัก'}"
+                  <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    ๑. สรุปภาพรวมสถานการณ์โดยปัญญาประดิษฐ์ (Typhoon AI)
+                    <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: briefing.typhoonStatus === 'live' ? '#dcfce7' : '#fee2e2', color: briefing.typhoonStatus === 'live' ? '#16a34a' : '#dc2626', border: `1px solid ${briefing.typhoonStatus === 'live' ? '#86efac' : '#fca5a5'}`, fontStyle: 'normal' }}>
+                      {briefing.typhoonStatus === 'live' ? '● LIVE AI' : briefing.typhoonStatus === 'offline' ? '○ AI OFFLINE' : '○ PENDING'}
+                    </span>
+                  </h3>
+                  <div style={{ background: briefing.typhoonStatus === 'offline' ? '#fff7ed' : '#f8fafc', border: `1px solid ${briefing.typhoonStatus === 'offline' ? '#fed7aa' : '#e2e8f0'}`, borderRadius: '8px', padding: '16px', color: '#1e293b', fontStyle: 'italic', marginBottom: '20px' }}>
+                    {briefing.text
+                      ? `"${briefing.text}"`
+                      : briefing.typhoonStatus === 'offline'
+                        ? <span style={{ fontStyle: 'normal', fontSize: '11px', color: '#92400e' }}>⚠ Typhoon AI offline{briefing.fallbackReason ? ` — ${briefing.fallbackReason}` : ''}<br/>ระดับเฝ้าระวัง {alertLevel} คำนวณจากข้อมูลเซ็นเซอร์ (TMD/CCTV) โดยไม่มีการสรุปภาษาธรรมชาติ</span>
+                        : 'ยังไม่มีสรุปสถานการณ์ — กดรีเฟรชที่หน้าศูนย์หลักเพื่อรับสรุปจาก Typhoon AI'}
                   </div>
 
                   <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๒. สภาพอากาศและการประเมินความเสี่ยง TMD</h3>
@@ -2153,15 +2285,15 @@ export default function App() {
                     หลีกเลี่ยงเส้นทางพื้นที่ลุ่มต่ำสะสมในโซนใต้ (Route C - {ROUTES_BASE[2].name}) ซึ่งมีระดับน้ำสูงสุดเกือบวิกฤต
                   </p>
 
-                  {/* Official sign-off block */}
+                  {/* Sign-off block */}
                   <div style={{ marginTop: '40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <span style={{ fontSize: '10px', color: '#666' }}>ระบบจัดทำรายงานอัตโนมัติของรัฐ</span>
-                      <div style={{ fontSize: '10px', color: '#333', marginTop: '4px' }}>Security Hash: <strong>SHA-256/GISTDA-EOC-989F</strong></div>
+                      <span style={{ fontSize: '10px', color: '#666' }}>สร้างอัตโนมัติโดย FloodNav AI System</span>
+                      <div style={{ fontSize: '9px', color: '#999', marginTop: '4px', fontStyle: 'italic' }}>ตัวอย่างรูปแบบรายงาน (Demo Template) — ไม่ใช่เอกสารราชการ</div>
                     </div>
-                    <div style={{ textAlign: 'center', width: '220px', borderTop: '1px solid #333', paddingTop: '8px', fontSize: '11px' }}>
-                      <strong>(ผู้ว่าราชการจังหวัดเชียงราย)</strong><br />
-                      ผู้บัญชาการศูนย์ป้องกันและบรรเทาสาธารณภัยเขตเชียงราย
+                    <div style={{ textAlign: 'center', width: '220px', borderTop: '1px solid #ccc', paddingTop: '8px', fontSize: '10px', color: '#666' }}>
+                      <em>(ช่องลงนามผู้อนุมัติ)</em><br />
+                      ผู้บัญชาการศูนย์ป้องกันและบรรเทาสาธารณภัย
                     </div>
                   </div>
                 </div>
@@ -2182,18 +2314,22 @@ export default function App() {
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>ทีมจัดสรรกำลังพล</span>
-                      <strong style={{ color: 'var(--safe)', fontFamily: 'var(--font-mono)' }}>พร้อมปฏิบัติการ</strong>
+                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>ข้อมูลกำลังพล (demo)</span>
+                      <strong style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>ไม่มีข้อมูล real-time</strong>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>ระบบ GISTDA Link</span>
-                      <strong style={{ color: 'var(--safe)', fontFamily: 'var(--font-mono)' }}>CONNECTED</strong>
+                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>GISTDA Flood Layer</span>
+                      <strong style={{ color: gistdaRiskPoints.length > 0 ? 'var(--safe)' : 'var(--text-3)', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
+                        {gistdaRiskPoints.length > 0 ? `LIVE (${gistdaRiskPoints.length} จุด)` : 'OFFLINE'}
+                      </strong>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>ระบบ Typhoon AI Link</span>
-                      <strong style={{ color: 'var(--safe)', fontFamily: 'var(--font-mono)' }}>ACTIVE</strong>
+                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>Typhoon AI</span>
+                      <strong style={{ color: briefing.text ? 'var(--safe)' : 'var(--text-3)', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
+                        {briefing.text ? 'ACTIVE' : 'ยังไม่ได้รับ briefing'}
+                      </strong>
                     </div>
                   </div>
                 </div>
