@@ -73,15 +73,20 @@ if (TYPHOON_API_KEY) {
   console.log('⚠️  TYPHOON_API_KEY missing — AI endpoints disabled');
 }
 
-// CORS — allowlist: Vercel frontend + local dev. FRONTEND_ORIGIN set on Railway.
+// CORS — allow Vercel deployments, explicit FRONTEND_ORIGIN, and local dev
 const ALLOWED_ORIGINS = [
   process.env.FRONTEND_ORIGIN,
   'http://localhost:5173',
   'http://localhost:4173',
 ].filter(Boolean);
 app.use(cors({
-  origin: (origin, cb) =>
-    (!origin || ALLOWED_ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error(`CORS: ${origin} not allowed`)),
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true); // server-to-server
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    if (origin.endsWith('.vercel.app')) return cb(null, true); // all Vercel preview URLs
+    if (origin.endsWith('.up.railway.app')) return cb(null, true); // Railway internal
+    cb(new Error(`CORS: ${origin} not allowed`));
+  },
   credentials: true,
 }));
 app.use(express.json());
