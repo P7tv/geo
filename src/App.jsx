@@ -540,7 +540,7 @@ export default function App() {
 
     // Persist override to server audit log when it's a human override (officerOverride provided)
     if (officerOverride) {
-      fetch('http://localhost:3001/api/override', {
+      fetch('/api/override', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routeId: routeName, reason, officer }),
@@ -585,7 +585,7 @@ export default function App() {
     if (routes.length === 0) { addToast('ยังไม่มีข้อมูลเส้นทาง — รอโหลดสักครู่', 'warn'); return; }
     try {
       addToast('AI กำลังวิเคราะห์เส้นทาง A/B/C...', 'info');
-      const res = await fetch('http://localhost:3001/api/explain', {
+      const res = await fetch('/api/explain', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routes }),
       });
@@ -631,7 +631,7 @@ export default function App() {
       routingSource,
     };
     try {
-      const res = await fetch('http://localhost:3001/api/explain', {
+      const res = await fetch('/api/explain', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routes: [payload] }),
       });
@@ -651,7 +651,7 @@ export default function App() {
 
   const fetchGistdaFloodData = async (range = floodRange) => {
     try {
-      const res = await fetch(`http://localhost:3001/api/gistda/flood?range=${range}`);
+      const res = await fetch(`/api/gistda/flood?range=${range}`);
       if (!res.ok) throw new Error(`GISTDA API ${res.status}`);
       const data = await res.json();
       const features = data?.features ?? [];
@@ -729,7 +729,7 @@ export default function App() {
 
   const fetchRealRoutes = async () => {
     try {
-      const data = await fetch('http://localhost:3001/api/flood-routes').then(r => r.json());
+      const data = await fetch('/api/flood-routes').then(r => r.json());
       const paths = {};
       for (const [id, route] of Object.entries(data)) {
         if (!route.points?.length) continue;
@@ -796,7 +796,7 @@ export default function App() {
     const REQUESTED = 3;
     setDynRequestedCount(REQUESTED);
     try {
-      const res = await fetch('http://localhost:3001/api/dynamic-routes', {
+      const res = await fetch('/api/dynamic-routes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ start: dynStart, end: dynEnd, blockedPoints: dynBlocked, avoidFlood: true, routeCount: REQUESTED }),
@@ -860,7 +860,7 @@ export default function App() {
     fetchLogs();
 
     // Hydrate persisted human override logs from server (Supabase-backed)
-    fetch('http://localhost:3001/api/override/log')
+    fetch('/api/override/log')
       .then(r => r.json())
       .then(logs => {
         if (logs?.length) {
@@ -948,7 +948,7 @@ export default function App() {
     }));
 
     try {
-      const res = await fetch('http://localhost:3001/api/ai/chat', {
+      const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: msg, history: historyPayload, routeContext: buildRouteContext() }),

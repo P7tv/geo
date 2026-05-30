@@ -2,7 +2,7 @@
  * TMD Weather Service — เรียกผ่าน server.js proxy เพื่อหลีกเลี่ยง CORS
  */
 
-const PROXY_BASE = 'http://localhost:3001/api/tmd/forecast';
+const PROXY_BASE = '/api/tmd/forecast';
 
 export const getHourlyForecast = async (lat, lon) => {
   // ใช้เวลากรุงเทพ (UTC+7) เพื่อให้ date และ hour ตรงกันเสมอ

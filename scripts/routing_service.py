@@ -74,23 +74,52 @@ _route_count_warning = '  ⚠️  MAX_ROUTE_COUNT=3 uses more CPU/RAM — ensure
 print(f'[routing] Memory limit: {MEMORY_LIMIT_GB} GB  |  max routes: {MAX_ROUTE_COUNT}  |  max blocked: {MAX_BLOCKED_PTS}{_route_count_warning}', flush=True)
 print(f'[routing] Loading {PKL} …', flush=True)
 
-t0 = time.time()
-with open(PKL, 'rb') as f:
-    G: nx.MultiDiGraph = pickle.load(f)
-_load_time = round(time.time() - t0, 2)
-_mem_after_load = _memory_usage_gb()
+G            = None
+_graph_error = None
+_load_time   = 0.0
+_mem_after_load = 0.0
+_node_list   = []
+_node_coords = None
+_kdtree      = None
 
-print(f'[routing] Graph ready: {G.number_of_nodes():,} nodes  '
-      f'{G.number_of_edges():,} edges  ({_load_time}s)  '
-      f'RSS={_mem_after_load:.2f} GB', flush=True)
-
-# KD-tree for O(log n) snap (read-only — no RAM concern)
-_node_list   = list(G.nodes())
-_node_coords = np.array([[G.nodes[n]['x'], G.nodes[n]['y']] for n in _node_list])
-_kdtree      = cKDTree(_node_coords)
-print('[routing] KD-tree built — service ready', flush=True)
+try:
+    t0 = time.time()
+    with open(PKL, 'rb') as f:
+        G = pickle.load(f)
+    _load_time      = round(time.time() - t0, 2)
+    _mem_after_load = _memory_usage_gb()
+    print(f'[routing] Graph ready: {G.number_of_nodes():,} nodes  '
+          f'{G.number_of_edges():,} edges  ({_load_time}s)  '
+          f'RSS={_mem_after_load:.2f} GB', flush=True)
+    _node_list   = list(G.nodes())
+    _node_coords = np.array([[G.nodes[n]['x'], G.nodes[n]['y']] for n in _node_list])
+    _kdtree      = cKDTree(_node_coords)
+    print('[routing] KD-tree built — service ready', flush=True)
+except (FileNotFoundError, OSError) as e:
+    _graph_error = f'Graph file not found: {PKL} — {e}'
+    print(f'[routing] ⚠️  {_graph_error}', flush=True)
+except MemoryError as e:
+    _graph_error = f'MemoryError loading graph — reduce MAX_ROUTE_COUNT or increase RAM: {e}'
+    print(f'[routing] ⚠️  {_graph_error}', flush=True)
+except Exception as e:
+    _graph_error = f'Graph load failed: {type(e).__name__}: {e}'
+    print(f'[routing] ⚠️  {_graph_error}', flush=True)
 
 app = Flask(__name__)
+
+# Always return JSON — never Flask HTML error pages
+@app.errorhandler(Exception)
+def _handle_exception(e):
+    import traceback
+    return jsonify({'error': str(e), 'detail': traceback.format_exc()[-500:]}), 500
+
+@app.errorhandler(404)
+def _handle_404(e):
+    return jsonify({'error': 'Not found', 'path': request.path}), 404
+
+@app.errorhandler(405)
+def _handle_405(e):
+    return jsonify({'error': 'Method not allowed'}), 405
 
 # ── Geometry helpers ───────────────────────────────────────────────────────────
 
@@ -277,10 +306,11 @@ def _annotate_overlap(routes: list) -> list:
 def health():
     mem = _memory_usage_gb()
     return jsonify({
-        'status':            'ok' if mem < MEMORY_LIMIT_GB else 'memory-warning',
-        'graphLoaded':       True,
-        'nodes':             G.number_of_nodes(),
-        'edges':             G.number_of_edges(),
+        'status':            'ok' if (G is not None and mem < MEMORY_LIMIT_GB) else ('graph-unavailable' if G is None else 'memory-warning'),
+        'graphLoaded':       G is not None,
+        'graphError':        _graph_error,
+        'nodes':             G.number_of_nodes() if G is not None else 0,
+        'edges':             G.number_of_edges() if G is not None else 0,
         'engine':            f'NetworkX A* + ×{PENALTY_FACTOR} edge-penalty alternates',
         'bboxBufferM':       BBOX_BUFFER_M,
         'blockedStrategy':   'penalizedEdges',
@@ -299,6 +329,14 @@ def health():
 
 @app.post('/route')
 def route():
+    # ── Graph availability guard — 503 triggers API fallback to OSRM ──────────
+    if G is None:
+        return jsonify({
+            'error': _graph_error or 'Graph not loaded',
+            'graphLoaded': False,
+            'hint': 'API will fallback to OSRM automatically',
+        }), 503
+
     # ── Memory guard (before doing any work) ──────────────────────────────────
     mem_err = _check_memory()
     if mem_err:
@@ -389,6 +427,7 @@ def route():
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get('ROUTING_PORT', 3002))
-    print(f'[routing] Listening on :{port}  (ROUTING_ENGINE=local required in server.js)', flush=True)
+    # Railway injects PORT; local dev falls back to 3002
+    port = int(os.environ.get('PORT', os.environ.get('ROUTING_PORT', 3002)))
+    print(f'[routing] Listening on :{port}', flush=True)
     app.run(host='0.0.0.0', port=port, threaded=True)

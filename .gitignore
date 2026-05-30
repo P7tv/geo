@@ -11,6 +11,9 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.local
+.env.*.local
 
 # Editor directories and files
 .vscode/*
@@ -35,4 +38,4 @@ sr_cri.rar
 sr_cri_extracted/
 
 # LDD soil shapefile (extracted from sr_cri.rar)
-เชียงราย/
+เชียงราย/!chiang_rai_graph.pkl

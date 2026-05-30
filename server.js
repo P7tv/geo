@@ -73,7 +73,17 @@ if (TYPHOON_API_KEY) {
   console.log('⚠️  TYPHOON_API_KEY missing — AI endpoints disabled');
 }
 
-app.use(cors());
+// CORS — allowlist: Vercel frontend + local dev. FRONTEND_ORIGIN set on Railway.
+const ALLOWED_ORIGINS = [
+  process.env.FRONTEND_ORIGIN,
+  'http://localhost:5173',
+  'http://localhost:4173',
+].filter(Boolean);
+app.use(cors({
+  origin: (origin, cb) =>
+    (!origin || ALLOWED_ORIGINS.includes(origin)) ? cb(null, true) : cb(new Error(`CORS: ${origin} not allowed`)),
+  credentials: true,
+}));
 app.use(express.json());
 
 // Camera → Route mapping (ตาม Jetson CCTV setup)
@@ -238,7 +248,7 @@ const fetchFloodFreqFeatures = async (routeId) => {
     return floodFreqFeatCache[routeId];
   }
   try {
-    const dataKey = process.env.VITE_GISTDA_DATA_KEY;
+    const dataKey = process.env.GISTDA_API_KEY;
     const bbox = ROUTE_BBOX[routeId].join(',');
     const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood-freq` +
       `?bbox=${bbox}&pv_idn=57&limit=1000`;
@@ -427,7 +437,7 @@ const fetchGistdaCurrentFlood = async () => {
     return gistdaFloodCache.data;
   }
   try {
-    const dataKey = process.env.VITE_GISTDA_DATA_KEY;
+    const dataKey = process.env.GISTDA_API_KEY;
     const url = 'https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/7days?pv_idn=57&limit=1000';
     const r = await fetchWithTimeout(url, { headers: { 'API-Key': dataKey } }, 10000);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -918,7 +928,7 @@ app.get('/api/ai/briefing', async (_req, res) => {
 // Returns GeoJSON FeatureCollection; features[] is empty when no active flooding (not an error)
 app.get('/api/gistda/flood', async (req, res) => {
   try {
-    const dataKey = process.env.VITE_GISTDA_DATA_KEY;
+    const dataKey = process.env.GISTDA_API_KEY;
     const VALID_RANGES = ['1day', '3days', '7days', '30days'];
     const range = VALID_RANGES.includes(req.query.range) ? req.query.range : '7days';
     const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood/${range}?pv_idn=57&limit=1000`;
@@ -1164,7 +1174,7 @@ const fetchFloodFreqForBbox = async (bbox) => {
   const cached = dynFreqCache.get(key);
   if (cached && Date.now() - cached.ts < DYN_FREQ_TTL) return cached.data;
   try {
-    const dataKey = process.env.VITE_GISTDA_DATA_KEY;
+    const dataKey = process.env.GISTDA_API_KEY;
     const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood-freq` +
       `?bbox=${bbox.join(',')}&pv_idn=57&limit=1000`;
     const r = await fetchWithTimeout(url, { headers: { 'API-Key': dataKey } }, 12000);
@@ -1252,20 +1262,17 @@ async function buildFixedFallbackRoutes(weather, gistdaFeatures, damLevels) {
 }
 
 // ── Routing engine constants ────────────────────────────────────────────────────
-const LOCAL_GRAPH_URL = 'http://localhost:3002';
+// ROUTING_SERVICE_URL: Railway service URL in production, localhost for local dev
+const LOCAL_GRAPH_URL = process.env.ROUTING_SERVICE_URL || 'http://localhost:3002';
 const LIMITATIONS_LOCAL  = 'Blocked points cause graph-level edge penalties in the local road network. Alternative routes avoid blocked zones where possible.';
 const LIMITATIONS_OSRM   = 'Blocked points are applied as post-route risk penalties, not graph-level edge removals. Route geometry may still pass through blocked zones.';
 const LIMITATIONS_FIXED  = 'Using precomputed A/B/C routes — no custom start/end or real-time routing available.';
 
-// Local graph is experimental — only active when ROUTING_ENGINE=local in env.
-// Default (OSRM public API) is safe for 8 GB RAM machines.
-const LOCAL_GRAPH_ENABLED = process.env.ROUTING_ENGINE === 'local';
-console.log(`[routing-engine] ROUTING_ENGINE = "${process.env.ROUTING_ENGINE ?? ''}"  →  LOCAL_GRAPH_ENABLED = ${LOCAL_GRAPH_ENABLED}`);
-if (LOCAL_GRAPH_ENABLED) {
-  console.log('[routing-engine] ⚠️  Experimental local NetworkX graph active. Health probe: ' + LOCAL_GRAPH_URL + '/health');
-} else {
-  console.log('[routing-engine] Primary: OSRM public API. Set ROUTING_ENGINE=local to enable local graph (npm run start:local).');
-}
+// ROUTING_ENGINE defaults to 'local' on Railway (routing service co-deployed).
+// Set ROUTING_ENGINE=osrm to skip local graph and use OSRM directly (local dev without routing service).
+const ROUTING_ENGINE      = process.env.ROUTING_ENGINE ?? 'local';
+const LOCAL_GRAPH_ENABLED = ROUTING_ENGINE === 'local';
+console.log(`[routing-engine] ROUTING_ENGINE="${ROUTING_ENGINE}"  LOCAL_GRAPH_URL="${LOCAL_GRAPH_URL}"  enabled=${LOCAL_GRAPH_ENABLED}`);
 
 // Cache: 10 s when unavailable (fast retry during startup race), 30 s when available.
 let _localGraphAvailable = null;

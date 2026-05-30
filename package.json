@@ -8,8 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "server": "node server.js",
-    "routing": "python3 scripts/routing_service.py",
+    "start:backend": "node server.js",
+    "routing": "gunicorn --bind 0.0.0.0:${PORT:-3002} --workers 1 --timeout 120 scripts.routing_service:app",
     "start": "concurrently --names \"API,UI\" --prefix-colors \"blue,green\" \"node server.js\" \"vite\"",
     "start:local": "concurrently --names \"API,ROUTING,UI\" --prefix-colors \"blue,yellow,green\" \"cross-env ROUTING_ENGINE=local node server.js\" \"python3 scripts/routing_service.py\" \"vite\"",
     "start:local:3": "concurrently --names \"API,ROUTING,UI\" --prefix-colors \"blue,yellow,green\" \"cross-env ROUTING_ENGINE=local node server.js\" \"cross-env MAX_ROUTE_COUNT=3 python3 scripts/routing_service.py\" \"vite\""
