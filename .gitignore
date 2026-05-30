@@ -30,7 +30,7 @@ CLAUDE.md
 # Large GIS / OSM data (re-downloadable, not for version control)
 *.osm.pbf
 *.osm
-*.pkl
+# *.pkl
 sr_cri.rar
 sr_cri_extracted/
 
