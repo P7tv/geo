@@ -1,0 +1,295 @@
+# FloodNav — API Documentation Reference
+
+รวม docs ของทุก API ที่ระบบใช้ พร้อม endpoint จริงที่ใช้ใน `server.js` และสิ่งที่ต้องตรวจสอบ
+
+---
+
+## 1. TMD Weather Forecast API
+**ใช้ใน:** `fetchLiveWeather()`, `GET /api/tmd/forecast`
+
+| | |
+|---|---|
+| **Docs** | https://data.tmd.go.th/nwpapi/doc/ |
+| **Base URL** | `https://data.tmd.go.th/nwpapi/v1` |
+| **Auth** | Bearer Token (TMD_TOKEN ใน .env) |
+
+**Endpoint ที่ใช้จริง:**
+```
+GET /forecast/hourly/at?lat=19.908&lon=99.832&fields=tc,rh,rr,ws,wd,cond&date=YYYY-MM-DD&hour=H&duration=1
+```
+
+**⚠️ ต้องตรวจสอบ:**
+- ทดสอบตอนนี้ได้ผล `OFFLINE` — token อาจหมดอายุ (JWT exp ดูได้จาก [jwt.io](https://jwt.io))
+- field `rr` = rainfall mm/hr ที่ใช้คำนวณ DepthTrend (0.25 weight) — ถ้า offline ค่าจะเป็น 0 ตลอด
+- ต่ออายุ token ที่: https://data.tmd.go.th/nwpapi/doc/#section/Authentication
+
+---
+
+## 2. TMD Official Warnings API
+**ใช้ใน:** `GET /api/warnings`
+
+| | |
+|---|---|
+| **Docs** | https://data.tmd.go.th/nwpapi/doc/ (section Warnings) |
+| **Base URL** | `https://data.tmd.go.th/api/v1` |
+| **Auth** | Bearer Token (TMD_TOKEN เดียวกัน) |
+
+**Endpoint ที่ใช้จริง:**
+```
+GET /warnings?province=เชียงราย&type=json
+```
+
+**⚠️ ต้องตรวจสอบ:**
+- response structure: ใช้ `.warnings[0].description` หรือ `.data[0].warning` — ไม่แน่ใจ field ที่ถูกต้อง
+- ทดสอบแล้วได้ `warnings: 0 entries` (อาจไม่มีประกาศจริง หรือ response format ต่างกัน)
+
+---
+
+## 3. Thai Water API (thaiwater.net v3)
+**ใช้ใน:** `GET /api/water-levels`, `GET /api/dams`, `GET /api/route-risk`
+
+| | |
+|---|---|
+| **Docs อ้างอิง** | https://standard.thaiwater.net/glossary/api-documentation/ |
+| **Base URL จริง** | `https://api-v3.thaiwater.net/api/v1/thaiwater30/public` |
+| **Station List** | `https://api-v3.thaiwater.net/api/v1/thaiwater30/frontend/shared/station_all` |
+| **Auth** | ไม่ต้องการ (public API) |
+
+> ⚠️ **api.thaiwater.net ล้าสมัย** — domain จริงที่ใช้งานได้คือ `api-v3.thaiwater.net`
+> ค้นพบโดยการ reverse-engineer JS bundle ของ www.thaiwater.net
+
+**Endpoints ที่ใช้จริง:**
+```
+GET /waterlevel_graph?station_type=tele_waterlevel&station_id={numeric_id}&start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
+GET /analyst/dam    (returns all 17 major dams, filter by dam.id)
+GET /frontend/shared/station_all    (10,729 stations, province_code=57 คือเชียงราย)
+```
+
+**Response structure (waterlevel_graph):**
+```json
+{
+  "data": {
+    "graph_data": [{ "datetime": "2026-05-24 12:00", "value": 389.6, "discharge": 175 }],
+    "min_bank": 392.5,        // ขอบตลิ่ง (masl) — ใช้เป็น warning threshold
+    "warning_level": null,    // บางสถานีมีค่า
+    "critical_level": null
+  }
+}
+```
+
+> **หมายเหตุ:** `value` คือ ระดับน้ำ meters above sea level (masl) ไม่ใช่ความลึกจากผิวน้ำ
+> FloodDepth ที่แท้จริง = `value - ground_level` หรือใช้ `value / min_bank` เป็น ratio
+
+**Station IDs เชียงราย (verified ✅):**
+
+| station_id | old_code | แม่น้ำ/ที่ตั้ง | อำเภอ | สถานะข้อมูล |
+|---|---|---|---|---|
+| `1574191` | G.2A | แม่น้ำกก บ้านกกโท้ง | เมือง | ✅ มีข้อมูล, min_bank=392.5 |
+| `6855760` | — | สะพานสบกก (กก-สาย) | เชียงแสน | ✅ มีข้อมูล |
+| `3303` | Kh.89 | แม่น้ำจัน บ้านหัวสะพาน | แม่จัน | ✅ มีข้อมูล |
+| `3301` | I.14 | แม่น้ำอิง บ้านน้ำอิง | ขุนตาล | ⚠️ มีบางส่วน |
+
+**หมายเหตุเขื่อน:**
+- thaiwater.net มีเฉพาะเขื่อนใหญ่ 17 แห่ง — **ไม่มีเขื่อนในเชียงราย**
+- ใช้ **เขื่อนแม่งัด (id=53, lat=19.16)** เป็น upstream pressure proxy แทน
+- Dam endpoint: `GET /analyst/dam` → filter `data.dam_hourly[].dam.id === 53`
+
+---
+
+## 4. Overpass API (OpenStreetMap)
+**ใช้ใน:** `GET /api/shelters`
+
+| | |
+|---|---|
+| **Docs** | https://wiki.openstreetmap.org/wiki/Overpass_API |
+| **Docs (Language Guide)** | https://wiki.openstreetmap.org/wiki/Overpass_API/Language_Guide |
+| **Base URL** | `https://overpass-api.de/api/interpreter` |
+| **Auth** | ไม่ต้องการ (rate limited) |
+
+**Query ที่ใช้จริง (bbox เชียงราย):**
+```
+[out:json][timeout:25];
+(
+  node["amenity"="hospital"](19.2,99.5,20.6,100.5);
+  way["amenity"="hospital"](19.2,99.5,20.6,100.5);
+  node["amenity"="fire_station"](19.2,99.5,20.6,100.5);
+  node["amenity"="shelter"](19.2,99.5,20.6,100.5);
+  node["emergency"="assembly_point"](19.2,99.5,20.6,100.5);
+  node["amenity"="police"](19.2,99.5,20.6,100.5);
+);
+out center;
+```
+
+**ผล overpass-turbo ทดสอบ 2026-05-24:**
+
+| Type | Thailand only (bbox fixed) | หมายเหตุ |
+|---|---|---|
+| hospital | 59 named + ~16 unnamed | รวม โรงพยาบาลชุมชน, รพ.สต. |
+| fire_station | 15 | ครอบคลุมทุกอำเภอ |
+| police | 96 | รวมด่านตรวจ, ป้อมตำรวจ |
+| assembly_point | 0 | ไม่มีใน OSM เชียงราย |
+
+**ปัญหาที่พบและแก้แล้ว:**
+- bbox เดิม `(19.2,99.5,20.6,100.5)` ดึง Laos 19 entries, Myanmar 3, China 10 มาด้วย → ตัดเป็น `(19.2,99.5,20.48,100.4)`
+- query เดิมใช้แค่ `node+way` → โรงพยาบาลใหญ่ที่ map เป็น `relation` หายหมด → เปลี่ยนเป็น `nwr` (node+way+relation)
+- `shelter` ใน OSM ส่วนใหญ่คือ gazebo/กระท่อมนา ไม่ใช่ที่อพยพ → ตัดออกจาก query แล้ว
+- timeout 25s สั้นเกินสำหรับ 400+ features → เพิ่มเป็น 60s
+
+---
+
+## 5. GISTDA Sphere Map SDK
+**ใช้ใน:** `SphereMap` component ใน `src/App.jsx`
+
+| | |
+|---|---|
+| **Docs** | https://sphere.gistda.or.th/docs/ |
+| **SDK URL** | `https://api.sphere.gistda.or.th/map/?key=VITE_GISTDA_MAP_KEY` |
+| **Auth** | API Key (VITE_GISTDA_MAP_KEY ใน .env) |
+
+**Class ที่ใช้จริง:**
+```js
+new window.sphere.Map({ placeholder, center, zoom })
+new window.sphere.Marker({ lon, lat }, { title, icon: { html } })
+new window.sphere.Polyline(coords, { lineColor, lineWidth })
+new window.sphere.Circle({ lon, lat }, radius, { lineColor, fillColor })
+new window.sphere.Polygon(pts, { lineColor, fillColor })
+mapInstance.Overlays.add(overlay)
+mapInstance.Overlays.remove(overlay)
+```
+
+**⚠️ ต้องตรวจสอบ:**
+- Map center ปัจจุบัน: `{ lon: 99.832, lat: 19.908 }` (เมืองเชียงราย) ✅
+- API Key หมดอายุหรือไม่ — ตรวจสอบกับ GISTDA portal
+
+---
+
+## 6. GISTDA Disaster / Flood Open API
+**ใช้ใน:** `GET /api/gistda/flood`
+
+| | |
+|---|---|
+| **Docs (Swagger UI)** | https://disaster.gistda.or.th/services/open-api |
+| **Base URL จริง** | `https://api-gateway.gistda.or.th/api/2.0/resources` |
+| **Auth** | HTTP Header: `API-Key: <VITE_GISTDA_DATA_KEY>` |
+
+> ⚠️ **Base URL เก่าที่ผิด**: `api.sphere.gistda.or.th/services/info/disaster-flood` — ไม่ใช่ endpoint จริง
+> ค้นพบ URL จริงจาก JS bundle (`5893-*.js` → module 95893) ของ disaster.gistda.or.th
+
+**Endpoint ที่ใช้จริง:**
+```
+GET /features/flood/7days?pv_idn=57&limit=1000
+```
+(`pv_idn=57` = เชียงราย — ใช้ ID ตัวเลข ไม่ใช่ชื่อจังหวัด)
+
+**Endpoints น้ำท่วมทั้งหมด:**
+```
+GET /features/flood/1day     พื้นที่น้ำท่วม 1 วัน
+GET /features/flood/3days    พื้นที่น้ำท่วม 3 วัน
+GET /features/flood/7days    พื้นที่น้ำท่วม 7 วัน (ที่ใช้)
+GET /features/flood/30days   พื้นที่น้ำท่วม 30 วัน
+GET /features/flood-freq     น้ำท่วมซ้ำซาก (historical)
+```
+
+**Query parameters:**
+| param | ชนิด | ความหมาย |
+|---|---|---|
+| `pv_idn` | string | Province ID (57 = เชียงราย) |
+| `ap_idn` | string | District ID |
+| `tb_idn` | string | Subdistrict ID |
+| `bbox`   | string | `x-min,y-min,x-max,y-max` |
+| `limit`  | integer | จำนวน records (default 1, max 10000) |
+| `offset` | integer | ข้าม N records แรก |
+
+**Response format (GeoJSON FeatureCollection):**
+```json
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "pv_tn": "เชียงราย", "ap_tn": "แม่สาย", "area_rai": 1234.5, ... },
+      "geometry": { "type": "Polygon", "coordinates": [[...]] }
+    }
+  ],
+  "numberMatched": 0,
+  "numberReturned": 0
+}
+```
+> `features[]` เป็น array ว่างเมื่อไม่มีน้ำท่วมในช่วงนั้น — ไม่ใช่ error
+
+**สถานะ:** `features[]` ว่าง = ไม่มีน้ำท่วมที่ active (ทดสอบ 2026-05-24 ซึ่งไม่ใช่ฤดูน้ำหลาก)
+
+---
+
+## 7. OSRM Route API
+**ใช้ใน:** `fetchRealRoutes()` ใน `src/App.jsx`
+
+| | |
+|---|---|
+| **Docs** | https://project-osrm.org/docs/v5.5.1/api/ |
+| **Base URL** | `https://router.project-osrm.org` |
+| **Auth** | ไม่ต้องการ (public, rate limited) |
+
+**Endpoint ที่ใช้จริง:**
+```
+GET /route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=full&geometries=geojson
+```
+
+**Routes ปัจจุบัน (เชียงราย):**
+| Route | จาก | ถึง |
+|---|---|---|
+| A | 99.832, 19.908 (เมือง) | 99.882, 20.434 (แม่สาย) |
+| B | 99.832, 19.908 (เมือง) | 100.074, 19.977 (เทิง) |
+| C | 99.832, 19.908 (เมือง) | 99.858, 19.375 (เวียงป่าเป้า) |
+
+**⚠️ ต้องตรวจสอบ:**
+- OSRM ไม่มี flood weight — เส้นทางเป็นแค่ shortest path ทั่วไป
+- สำหรับ production ควรใช้ A* พร้อม flood cost ตาม proposal
+
+---
+
+## 8. Supabase JavaScript Client
+**ใช้ใน:** `fetchLiveTraffic()`, CCTV detections ใน `server.js`
+
+| | |
+|---|---|
+| **Docs** | https://supabase.com/docs/reference/javascript/introduction |
+| **Dashboard** | https://supabase.com/dashboard |
+| **Auth** | SUPABASE_URL + SUPABASE_ANON_KEY ใน .env |
+
+**Query ที่ใช้จริง:**
+```js
+supabase
+  .from('detections')
+  .select('camera_id, extra')
+  .gte('timestamp', since)
+  .limit(500)
+```
+
+**Schema ที่ต้องมีใน Supabase:**
+| Table | Column | Type | หมายเหตุ |
+|---|---|---|---|
+| `detections` | `camera_id` | text | `cam_01`, `cam_02`, `cam_03`, `cam_04` |
+| `detections` | `timestamp` | timestamptz | เวลาตรวจจับ |
+| `detections` | `extra` | jsonb | `{ speed: number, route_id: string }` |
+
+**⚠️ ต้องตรวจสอบ:**
+- ทดสอบแล้วได้ 0 records — table ว่างหรือยังไม่มี Jetson ส่งข้อมูล
+- ตรวจสอบ Table schema ที่ Supabase Dashboard → Table Editor → `detections`
+- ถ้าต้องการ mock data ใส่ผ่าน Supabase Dashboard → SQL Editor
+
+---
+
+## สรุปสถานะ API ทั้งหมด
+
+| API | สถานะ | ปัญหาหลัก |
+|---|---|---|
+| TMD Weather | 🔴 OFFLINE | Token อาจหมดอายุ |
+| TMD Warnings | 🟡 Online แต่ว่าง | Response format ไม่ตรง |
+| thaiwater.net water | 🔴 OFFLINE | Station ID ผิดทั้งหมด |
+| thaiwater.net dam | 🔴 OFFLINE | Dam code ผิดทั้งหมด |
+| Overpass (shelters) | 🟢 แก้แล้ว | 59 รพ. + 15 สถานีดับเพลิง + 96 ตำรวจ |
+| GISTDA Sphere Map | 🟢 ใช้งานได้ | — |
+| GISTDA Flood Data | 🟢 Endpoint ถูกแล้ว | 0 pts = ไม่มีน้ำท่วม ณ วันที่ทดสอบ (ไม่ใช่ bug) |
+| OSRM | 🟢 ใช้งานได้ | ไม่มี flood weight |
+| Supabase | 🟢 Connected | Table ว่าง ยังไม่มี Jetson |

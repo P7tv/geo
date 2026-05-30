@@ -1,0 +1,8 @@
+flask
+flask-cors
+gunicorn
+networkx
+scipy
+shapely
+numpy
+psutil

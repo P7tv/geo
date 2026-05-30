@@ -1,4 +1,4 @@
-const BASE = 'http://localhost:3001/api';
+const BASE = '/api';
 
 export const getWaterLevels = async () => {
   try {
@@ -27,14 +27,6 @@ export const getShelters = async () => {
 export const getTmdWarnings = async () => {
   try {
     const r = await fetch(`${BASE}/warnings`);
-    if (!r.ok) return null;
-    return r.json();
-  } catch { return null; }
-};
-
-export const getRouteRisk = async () => {
-  try {
-    const r = await fetch(`${BASE}/route-risk`);
     if (!r.ok) return null;
     return r.json();
   } catch { return null; }

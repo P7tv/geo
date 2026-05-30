@@ -11,6 +11,9 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.local
+.env.*.local
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +25,24 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# AI / Editor
+CLAUDE.md
+.claude/
+
+# Large GIS / OSM data
+*.osm.pbf
+*.osm
+*.pkl
+!chiang_rai_graph.pkl
+sr_cri.rar
+sr_cri_extracted/
+**__pycache__/*
+**__pycache__
+**__pycache__/*
+scripts/__pycache__/*
+scripts/**__pycache__/
+scripts/**__pycache__/*
+
+# LDD soil shapefile
+เชียงราย/

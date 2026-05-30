@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 
 export default function SituationBriefing({ briefing, alertLevel, timestamp, onRefresh, isLoading }) {
   const [collapsed, setCollapsed] = useState(false);

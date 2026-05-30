@@ -1,36 +1,43 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import './index.css';
 
 import { getVehicleRouteSummary, getAiBriefing, getTerminalLogs } from './services/vehicleApi';
 import { getHourlyForecast } from './services/tmdApi';
-import { getWaterLevels, getDamLevels, getShelters, getTmdWarnings, getRouteRisk } from './services/externalApi';
+import { getWaterLevels, getDamLevels, getShelters, getTmdWarnings } from './services/externalApi';
 import { renderVehicleTrafficBadges, getCongestionColor } from './components/VehicleTrafficLayer';
 
 const WEATHER_STATIONS = [
-  { id: 'CM_CITY',       name: 'เมืองเชียงใหม่', lat: 18.788, lon: 98.985 },
-  { id: 'MAE_RIM',       name: 'แม่ริม',          lat: 18.914, lon: 98.944 },
-  { id: 'MAE_TAENG',     name: 'แม่แตง',          lat: 19.121, lon: 98.943 },
-  { id: 'SAN_SAI',       name: 'สันทราย',          lat: 18.850, lon: 99.040 },
-  { id: 'HANG_DONG',     name: 'หางดง',            lat: 18.685, lon: 98.918 },
-  { id: 'SAN_KAMPHAENG', name: 'สันกำแพง',         lat: 18.745, lon: 99.115 },
+  { id: 'CR_CITY',       name: 'เมืองเชียงราย', lat: 19.908, lon: 99.832 },
+  { id: 'MAE_SAI',      name: 'แม่สาย',         lat: 20.434, lon: 99.882 },
+  { id: 'WIANG_PA_PAO', name: 'เวียงป่าเป้า',   lat: 19.375, lon: 99.858 },
+  { id: 'THOENG',       name: 'เทิง',            lat: 19.977, lon: 100.074 },
+  { id: 'PHAN',         name: 'พาน',             lat: 19.639, lon: 99.779 },
+  { id: 'CHIANG_KHONG', name: 'เชียงของ',        lat: 20.299, lon: 100.389 },
 ];
 
-const CM_RISK_POINTS = [
-  { name: 'ช้างคลาน',   lat: 18.778, lon: 98.995, severity: 0.9 },
-  { name: 'กาดก้อม',    lat: 18.775, lon: 98.988, severity: 0.8 },
-  { name: 'สถานีรถไฟ',  lat: 18.785, lon: 99.015, severity: 0.7 },
-  { name: 'ป่าตัน',     lat: 18.815, lon: 98.995, severity: 0.85 },
+const CR_RISK_POINTS = [
+  { name: 'อ.แม่สาย',       lat: 20.434, lon: 99.882,  severity: 0.92 },
+  { name: 'อ.เวียงป่าเป้า', lat: 19.375, lon: 99.858,  severity: 0.88 },
+  { name: 'แม่น้ำกก เมือง', lat: 19.908, lon: 99.832,  severity: 0.60 },
+  { name: 'อ.เทิง',         lat: 19.977, lon: 100.074, severity: 0.65 },
 ];
 
 const ROUTES_BASE = [
-  { id: 'A', name: 'เส้นทาง A — ทล.1',              color: '#22c55e', status: 'ปลอดภัย',     desc: 'ถนนสายหลัก ทล.1 ระดับน้ำลดลงต่อเนื่อง' },
-  { id: 'B', name: 'เส้นทาง B — ทล.118',            color: '#f59e0b', status: 'เสี่ยงปานกลาง', desc: 'ทล.118 น้ำท่วมบางส่วน ระดับน้ำคงที่'   },
-  { id: 'C', name: 'เส้นทาง C — บ้านสันทราย',       color: '#ef4444', status: 'เสี่ยงสูง',    desc: 'ทางลัดตัดผ่านพื้นที่น้ำหลากฉับพลัน'    },
+  { id: 'A', name: 'เส้นทาง A — ทล.1 เมือง→แม่สาย',    color: '#22c55e', status: 'ปลอดภัย',     desc: 'ถนนสายหลัก ทล.1 ผ่านอ.พาน ระดับน้ำกกปกติ'       },
+  { id: 'B', name: 'เส้นทาง B — ทล.118 เมือง→เทิง',   color: '#f59e0b', status: 'เสี่ยงปานกลาง', desc: 'ทล.118 ผ่านอ.เทิง น้ำท่วมบางส่วน คาดการณ์เพิ่ม' },
+  { id: 'C', name: 'เส้นทาง C — ทางลัดเวียงป่าเป้า',   color: '#ef4444', status: 'เสี่ยงสูง',    desc: 'ทางลัดผ่านลุ่มน้ำลาว น้ำหลากฉับพลันสูงมาก'        },
 ];
 
+
 const TOGGLE_LABELS = {
-  flood: 'น้ำท่วม', wind: 'ลม', history: 'ประวัติ',
-  cloud: 'เมฆ', satellite: 'ดาวเทียม', sarMask: 'SAR', vehicles: 'ยานพาหนะ',
+  flood: 'น้ำท่วม', wind: 'อากาศและฝน', history: 'รายงานเหตุการณ์',
+  vehicles: 'จราจรและยานพาหนะ', histFreq: 'ความถี่น้ำท่วม', emergencyPOI: 'Emergency POI',
+};
+
+const CONGESTION_CONFIG = {
+  blocked: { tag: 'tag-danger', label: 'ติดขัด' },
+  warning: { tag: 'tag-warn',   label: 'หนาแน่น' },
+  normal:  { tag: 'tag-safe',   label: 'ปกติ' },
 };
 
 function getDist(p1, p2) {
@@ -118,6 +125,14 @@ const WeatherFieldOverlay = ({ windSpeed, windDeg, rainfallData }) => {
 };
 
 // --- GISTDA Sphere Map ---
+const FLOOD_WMS = {
+  'freq':   { path: 'flood-freq/wms',   layer: '6799ab8c6f832362f99030e6' },
+  '1day':   { path: 'flood/1day/wms',   layer: '676e3c965e01949dda35fa23' },
+  '3days':  { path: 'flood/3days/wms',  layer: '676e3d66d710b3b9a64a503e' },
+  '7days':  { path: 'flood/7days/wms',  layer: '673bffd740c0fc078a820adb' },
+  '30days': { path: 'flood/30days/wms', layer: '673c0081a9d1a551eebff626' },
+};
+
 const SHELTER_ICONS = {
   hospital:     { emoji: '🏥', color: 'rgba(59,130,246,0.8)'  },
   fire_station: { emoji: '🚒', color: 'rgba(239,68,68,0.8)'   },
@@ -126,12 +141,18 @@ const SHELTER_ICONS = {
   assembly_point:{ emoji: '👥', color: 'rgba(245,158,11,0.8)' },
 };
 
-const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters }) => {
+const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
-  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], sarPolygons: [], trafficMarkers: [], riskCircles: [], rainAreas: [], shelterMarkers: [] });
+  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null, dynLines: [], dynMarkers: [] });
+  const clickModeRef   = useRef(clickMode);
+  const onMapClickRef  = useRef(onMapClick);
   const [loading, setLoading] = useState(true);
   const [mapError, setMapError] = useState(false);
+
+  // Keep both refs in sync — click handler closure reads from refs, not props directly
+  useEffect(() => { clickModeRef.current  = clickMode;  }, [clickMode]);
+  useEffect(() => { onMapClickRef.current = onMapClick; }, [onMapClick]);
 
   useEffect(() => {
     let attempts = 0;
@@ -144,8 +165,19 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
         try {
           mapInstance.current = new window.sphere.Map({
             placeholder: mapRef.current,
-            center: { lon: 98.99, lat: 18.79 },
-            zoom: 12,
+            center: { lon: 99.832, lat: 19.908 },
+            zoom: 11,
+          });
+          // Wire map click → dynamic routing point capture (use refs so handler is never stale)
+          mapInstance.current.Event.bind('click', (e) => {
+            if (!clickModeRef.current) return;
+            // GISTDA SDK click event: try multiple property shapes
+            const lat = e?.location?.lat ?? e?.lat ?? (Array.isArray(e?.coordinate) ? e.coordinate[1] : null);
+            const lon = e?.location?.lon ?? e?.lon ?? (Array.isArray(e?.coordinate) ? e.coordinate[0] : null);
+            console.log('[MAP CLICK]', clickModeRef.current, lat, lon);
+            if (lat != null && lon != null && onMapClickRef.current) {
+              onMapClickRef.current({ lat: +lat.toFixed(6), lon: +lon.toFixed(6) });
+            }
           });
         } catch (err) {
           console.error("❌ Map initialization failed:", err);
@@ -158,28 +190,46 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       }
     }, 100);
     return () => clearInterval(t);
-  }, []);
+  }, []); // empty deps — map binds once; refs handle dynamic state
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
     layersRef.current.riskCircles.forEach(c => mapInstance.current.Overlays.remove(c));
     layersRef.current.riskCircles = [];
+    if (!toggles.flood) return;
     gistdaRiskPoints.forEach(pt => {
-      const circle = new window.sphere.Circle({ lon: pt.lon, lat: pt.lat }, 1200, {
-        lineColor: 'rgba(59,130,246,0.35)', fillColor: 'rgba(59,130,246,0.06)',
-      });
-      mapInstance.current.Overlays.add(circle);
-      layersRef.current.riskCircles.push(circle);
+      const severity = pt.severity ?? 0.6;
+      const color = severity > 0.8 ? '#ef4444' : severity > 0.6 ? '#f59e0b' : '#3b82f6';
+      const alpha = 0.12 + severity * 0.15;
+
+      // แสดง polygon segment ต่อตำบล ถ้ามี geometry จาก GISTDA API
+      if (pt.geometry?.type === 'Polygon' || pt.geometry?.type === 'MultiPolygon') {
+        const rings = pt.geometry.type === 'Polygon'
+          ? [pt.geometry.coordinates[0]]
+          : pt.geometry.coordinates.map(c => c[0]);
+        rings.forEach(ring => {
+          const pts2 = ring.map(([ln, lt]) => ({ lon: ln, lat: lt }));
+          const poly = new window.sphere.Polygon(pts2, {
+            lineColor: `${color}cc`,
+            fillColor: `${color}${Math.round(alpha * 255).toString(16).padStart(2, '0')}`,
+            lineWidth: 1.5,
+            title: pt.name,
+          });
+          mapInstance.current.Overlays.add(poly);
+          layersRef.current.riskCircles.push(poly);
+        });
+      }
     });
-  }, [gistdaRiskPoints]);
+  }, [gistdaRiskPoints, toggles.flood]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
     layersRef.current.stations.forEach(s => mapInstance.current.Overlays.remove(s));
     layersRef.current.stations = [];
+    if (!toggles.wind) return;
     WEATHER_STATIONS.forEach(st => {
       const d = stationData[st.id]; if (!d) return;
-      const rainValNum = parseFloat(d.rr);
+      const rainValNum = parseFloat(d.rain);
       const isRainValValid = !isNaN(rainValNum) && rainValNum > 0;
       const rainValStr = isRainValValid ? rainValNum.toFixed(1) : '0.0';
       const highRain = isRainValValid && rainValNum > 5;
@@ -213,7 +263,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       mapInstance.current.Overlays.add(marker);
       layersRef.current.stations.push(marker);
     });
-  }, [stationData]);
+  }, [stationData, toggles.wind]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -224,41 +274,43 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     layersRef.current.trafficMarkers.forEach(m => mapInstance.current.Overlays.remove(m));
     layersRef.current.trafficMarkers = [];
 
-    ROUTES_BASE.forEach(route => {
-      const d = routePaths[route.id]; 
-      if (!d || !d.points || d.points.length < 2) return;
-      
-      const isActive = route.id === activeRoute;
-      const lineColor = toggles.vehicles
-        ? getCongestionColor(route.id, vehicleData, route.color)
-        : (isActive ? route.color : '#2d3e50'); // standard hex color safety
-
-      const coords = d.points
-        .filter(p => p && !isNaN(p.lon) && !isNaN(p.lat))
-        .map(p => ({ lon: Number(p.lon), lat: Number(p.lat) }));
-        
-      if (coords.length < 2) return;
-
-      const poly = new window.sphere.Polyline(coords, { lineColor, lineWidth: isActive ? 6 : 2 });
-      mapInstance.current.Overlays.add(poly);
-      layersRef.current.polylines[route.id] = poly;
-      if (isActive) {
-        const s = new window.sphere.Marker(coords[0], { title: 'ต้นทาง' });
-        const e = new window.sphere.Marker(coords[coords.length - 1], { title: 'ปลายทาง' });
-        mapInstance.current.Overlays.add(s); mapInstance.current.Overlays.add(e);
-        layersRef.current.markers.push(s, e);
+    // Precomputed A/B/C polylines — only in fixed mode or when truly precomputed fallback
+    const showPrecomputed = routeMode !== 'dynamic' || isPrecomputedFallback;
+    if (showPrecomputed) {
+      ROUTES_BASE.forEach(route => {
+        const d = routePaths[route.id];
+        if (!d || !d.points || d.points.length < 2) return;
+        const isActive = route.id === activeRoute;
+        const rp = d.risk ?? 0;
+        const riskHex = rp >= 70 ? '#ef4444' : rp >= 40 ? '#f59e0b' : '#22c55e';
+        const lineColor = toggles.vehicles
+          ? getCongestionColor(route.id, vehicleData, riskHex)
+          : (isActive ? riskHex : riskHex + '66');
+        const coords = d.points
+          .filter(p => p && !isNaN(p.lon) && !isNaN(p.lat))
+          .map(p => ({ lon: Number(p.lon), lat: Number(p.lat) }));
+        if (coords.length < 2) return;
+        const poly = new window.sphere.Polyline(coords, { lineColor, lineWidth: isActive ? 6 : 2 });
+        mapInstance.current.Overlays.add(poly);
+        layersRef.current.polylines[route.id] = poly;
+        if (isActive) {
+          const s = new window.sphere.Marker(coords[0], { title: 'ต้นทาง' });
+          const e = new window.sphere.Marker(coords[coords.length - 1], { title: 'ปลายทาง' });
+          mapInstance.current.Overlays.add(s); mapInstance.current.Overlays.add(e);
+          layersRef.current.markers.push(s, e);
+        }
+      });
+      if (toggles.vehicles) {
+        layersRef.current.trafficMarkers = renderVehicleTrafficBadges(mapInstance.current, routePaths, vehicleData, activeRoute);
       }
-    });
-
-    if (toggles.vehicles) {
-      layersRef.current.trafficMarkers = renderVehicleTrafficBadges(mapInstance.current, routePaths, vehicleData, activeRoute);
     }
-  }, [activeRoute, routePaths, toggles.vehicles, vehicleData]);
+  }, [activeRoute, routePaths, toggles.vehicles, vehicleData, routeMode, isPrecomputedFallback]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
     layersRef.current.incidents.forEach(l => mapInstance.current.Overlays.remove(l));
     layersRef.current.incidents = [];
+    if (!toggles.history) return;
     incidents.forEach(inc => {
       const circle = new window.sphere.Circle({ lon: inc.lon, lat: inc.lat }, 1200, {
         lineColor: 'rgba(239,68,68,0.5)', fillColor: 'rgba(239,68,68,0.1)',
@@ -270,71 +322,64 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       });
       mapInstance.current.Overlays.add(marker); layersRef.current.incidents.push(marker);
     });
-  }, [incidents]);
+  }, [incidents, toggles.history]);
 
+
+  // GISTDA flood-freq WMS layer — switches based on histFreqRange
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
-    layersRef.current.sarPolygons.forEach(p => mapInstance.current.Overlays.remove(p));
-    layersRef.current.sarPolygons = [];
-    if (toggles.sarMask) {
-      const polys = [
-        [{ lon:99.01,lat:18.79 },{ lon:99.02,lat:18.81 },{ lon:99.03,lat:18.80 },{ lon:99.025,lat:18.785 }],
-        [{ lon:98.98,lat:18.76 },{ lon:98.99,lat:18.77 },{ lon:98.97,lat:18.77 },{ lon:98.975,lat:18.755 }],
-      ];
-      polys.forEach(pts => {
-        const p = new window.sphere.Polygon(pts, { lineColor:'rgba(59,130,246,0.4)', fillColor:'rgba(59,130,246,0.15)' });
-        mapInstance.current.Overlays.add(p); layersRef.current.sarPolygons.push(p);
-      });
+    if (layersRef.current.floodFreqLayer) {
+      mapInstance.current.Layers.remove(layersRef.current.floodFreqLayer);
+      layersRef.current.floodFreqLayer = null;
     }
-  }, [toggles.sarMask]);
+    if (!toggles.histFreq) return;
+    const wms = FLOOD_WMS[histFreqRange];
+    if (!wms) return;
+    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY;
+    const layer = new window.sphere.Layer(`freq-wms-${histFreqRange}`, {
+      type: window.sphere.LayerType.WMS,
+      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
+      extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
+      zoomRange: { min: 1, max: 20 },
+      zIndex: 3,
+    });
+    mapInstance.current.Layers.add(layer);
+    layersRef.current.floodFreqLayer = layer;
+  }, [toggles.histFreq, histFreqRange]);
 
+  // GISTDA flood WMS layer — switches based on floodRange
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
-    layersRef.current.rainAreas.forEach(p => mapInstance.current.Overlays.remove(p));
-    layersRef.current.rainAreas = [];
-
-    // Render rain coverage area polygons when toggles.cloud is enabled
-    if (toggles.cloud) {
-      WEATHER_STATIONS.forEach(st => {
-        const d = stationData[st.id];
-        if (d && d.rr > 0) {
-          // Draw a gorgeous rain cloud coverage diamond polygon over the rainy area
-          const radiusScale = Math.max(0.02, d.rr * 0.007); // dynamic cloud size
-          const pts = [
-            { lon: st.lon, lat: st.lat + radiusScale },
-            { lon: st.lon + radiusScale * 1.2, lat: st.lat },
-            { lon: st.lon, lat: st.lat - radiusScale },
-            { lon: st.lon - radiusScale * 1.2, lat: st.lat },
-            { lon: st.lon, lat: st.lat + radiusScale } // close
-          ];
-
-          const fillColor = d.rr > 10
-            ? 'rgba(239, 68, 68, 0.08)' // heavy: red cloud cell
-            : d.rr > 4
-              ? 'rgba(245, 158, 11, 0.07)'  // moderate: amber cloud cell
-              : 'rgba(59, 130, 246, 0.05)'; // light: blue cloud cell
-          const lineColor = d.rr > 10
-            ? 'rgba(239, 68, 68, 0.35)'
-            : d.rr > 4
-              ? 'rgba(245, 158, 11, 0.3)'
-              : 'rgba(59, 130, 246, 0.25)';
-
-          const poly = new window.sphere.Polygon(pts, { lineColor, fillColor });
-          mapInstance.current.Overlays.add(poly);
-          layersRef.current.rainAreas.push(poly);
-        }
-      });
+    if (layersRef.current.floodWmsLayer) {
+      mapInstance.current.Layers.remove(layersRef.current.floodWmsLayer);
+      layersRef.current.floodWmsLayer = null;
     }
-  }, [stationData, toggles.cloud]);
+    if (!toggles.flood) return;
+    const wms = FLOOD_WMS[floodRange];
+    if (!wms) return;
+    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY;
+    const layer = new window.sphere.Layer(`flood-wms-${floodRange}`, {
+      type: window.sphere.LayerType.WMS,
+      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
+      extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
+      zoomRange: { min: 1, max: 20 },
+      zIndex: 4,
+    });
+    mapInstance.current.Layers.add(layer);
+    layersRef.current.floodWmsLayer = layer;
+  }, [toggles.flood, floodRange]);
 
-  // Emergency facilities from OSM
+  // Emergency facilities from OSM — toggled via emergencyPOI, max 30 markers
   useEffect(() => {
-    if (!mapInstance.current || !window.sphere || !shelters?.length) return;
+    if (!mapInstance.current || !window.sphere) return;
     layersRef.current.shelterMarkers.forEach(m => mapInstance.current.Overlays.remove(m));
     layersRef.current.shelterMarkers = [];
-    shelters.forEach(s => {
+    if (!toggles.emergencyPOI || !shelters?.length) return;
+    // Limit markers to avoid click-blocking and visual clutter
+    shelters.slice(0, 30).forEach(s => {
       const icon = SHELTER_ICONS[s.type] ?? SHELTER_ICONS.shelter;
-      const html = `<div class="facility-marker"><span>${icon.emoji}</span><span>${s.name.slice(0, 20)}</span></div>`;
+      // pointer-events:none on label so map click passes through the text layer
+      const html = `<div class="facility-marker" style="pointer-events:none"><span>${icon.emoji}</span><span>${s.name.slice(0, 20)}</span></div>`;
       const marker = new window.sphere.Marker(
         { lon: s.lon, lat: s.lat },
         { title: s.name, detail: s.type, icon: { html } }
@@ -342,22 +387,66 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       mapInstance.current.Overlays.add(marker);
       layersRef.current.shelterMarkers.push(marker);
     });
-  }, [shelters]);
+  }, [shelters, toggles.emergencyPOI]);
+
+  // Dynamic route polylines
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    layersRef.current.dynLines.forEach(l => mapInstance.current.Overlays.remove(l));
+    layersRef.current.dynLines = [];
+    (dynRoutes ?? []).forEach((route, i) => {
+      if (!route.geometry?.coordinates?.length) return;
+      const pts = route.geometry.coordinates.map(([lon, lat]) => ({ lon, lat }));
+      const isActive = route.id === dynActiveRoute;
+      const riskHex = route.risk >= 70 ? '#ef4444' : route.risk >= 40 ? '#f59e0b' : '#22c55e';
+      const color = isActive ? riskHex : riskHex + '77';
+      const line = new window.sphere.Polyline(pts, { lineColor: color, lineWidth: isActive ? 7 : 3 });
+      mapInstance.current.Overlays.add(line);
+      layersRef.current.dynLines.push(line);
+    });
+  }, [dynRoutes, dynActiveRoute]);
+
+  // Start / End / Blocked markers
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    layersRef.current.dynMarkers.forEach(m => mapInstance.current.Overlays.remove(m));
+    layersRef.current.dynMarkers = [];
+    const add = (pos, html, title) => {
+      const m = new window.sphere.Marker(pos, { title, icon: { html } });
+      mapInstance.current.Overlays.add(m);
+      layersRef.current.dynMarkers.push(m);
+    };
+    if (dynStart) add({ lon: dynStart.lon, lat: dynStart.lat },
+      '<div style="width:28px;height:28px;border-radius:50%;background:#22c55e;border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.5)">S</div>', 'จุดเริ่มต้น');
+    if (dynEnd) add({ lon: dynEnd.lon, lat: dynEnd.lat },
+      '<div style="width:28px;height:28px;border-radius:50%;background:#ef4444;border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.5)">E</div>', 'ปลายทาง');
+    (dynBlocked ?? []).forEach((bp, idx) => {
+      add({ lon: bp.lon, lat: bp.lat },
+        '<div style="width:24px;height:24px;border-radius:50%;background:#f59e0b;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 2px 6px rgba(0,0,0,.4)">⛔</div>',
+        bp.reason ?? `จุดปิด ${idx + 1}`);
+      // radius circle intentionally omitted — marker only; radiusM still sent to backend for penalty calc
+    });
+  }, [dynStart, dynEnd, dynBlocked]);
 
   return (
     <div style={{ height: '100%', width: '100%', position: 'relative' }}>
       <div ref={mapRef} style={{ height: '100%', width: '100%' }} />
       {loading && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(4,7,15,0.85)', zIndex: 1000, fontFamily: 'sans-serif' }}>
-          <div className="sync-dot" style={{ width: 12, height: 12, marginBottom: 12 }} />
-          <span style={{ fontSize: 13, color: '#f0f6fc', letterSpacing: '0.5px' }}>กำลังเชื่อมต่อ GISTDA Sphere Map...</span>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(248,250,252,0.88)', zIndex: 1000, fontFamily: 'sans-serif', backdropFilter: 'blur(2px)' }}>
+          <div className="sync-dot" style={{ marginBottom: 12 }} />
+          <span style={{ fontSize: 13, color: '#475569', letterSpacing: '0.5px', fontFamily: 'var(--font-th)' }}>กำลังเชื่อมต่อ GISTDA Sphere Map...</span>
+        </div>
+      )}
+      {clickMode && (
+        <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 900, background: 'rgba(15,23,42,0.88)', color: '#fff', padding: '6px 16px', borderRadius: 20, fontSize: 11, fontWeight: 700, letterSpacing: '0.5px', pointerEvents: 'none', whiteSpace: 'nowrap' }}>
+          {clickMode === 'start' ? '📍 คลิกแผนที่เพื่อตั้งจุดเริ่มต้น' : clickMode === 'end' ? '🏁 คลิกแผนที่เพื่อตั้งปลายทาง' : '⛔ คลิกแผนที่เพื่อเพิ่มจุดปิดถนน'}
         </div>
       )}
       {mapError && (
-        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(4,7,15,0.92)', zIndex: 1000, fontFamily: 'sans-serif', padding: 20, textAlign: 'center', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 12 }}>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(248,250,252,0.95)', zIndex: 1000, fontFamily: 'sans-serif', padding: 20, textAlign: 'center' }}>
           <span style={{ fontSize: 32, marginBottom: 12 }}>⚠️</span>
-          <strong style={{ fontSize: 15, color: '#ff3b30', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.5px' }}>การเชื่อมต่อแผนที่ขัดข้อง (Map Error)</strong>
-          <p style={{ fontSize: 11, color: '#8b949e', maxWidth: 280, lineHeight: 1.6 }}>ไม่สามารถโหลด SDK ได้ คีย์แผนที่ในระบบอาจผิดพลาดหรือขาดอายุการใช้งาน กรุณาเช็คตัวแปร VITE_GISTDA_MAP_KEY ใน .env</p>
+          <strong style={{ fontSize: 14, color: 'var(--danger)', marginBottom: 8 }}>การเชื่อมต่อแผนที่ขัดข้อง</strong>
+          <p style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 280, lineHeight: 1.6 }}>ไม่สามารถโหลด GISTDA SDK กรุณาเช็ค VITE_GISTDA_MAP_KEY ใน .env</p>
         </div>
       )}
     </div>
@@ -367,12 +456,38 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
 // ============================================================
 export default function App() {
   const [activeRoute, setActiveRoute] = useState('A');
+  const leftPanelScrollRef = useRef(null);
   const [activeTab, setActiveTab] = useState('cockpit'); // Routing tab state
   const [geoSearch, setGeoSearch] = useState('');
   const [stationData, setStationData] = useState({});
   const [routePaths, setRoutePaths] = useState({});
+  const [routeDataStatus, setRouteDataStatus] = useState(null);  // _meta.dataStatus from /api/flood-routes
+  const [routeSource, setRouteSource] = useState('live');         // 'live' | 'client-estimate'
+
+  // Dynamic routing state
+  const [routeMode, setRouteMode] = useState('dynamic');    // 'fixed' | 'dynamic'  — dynamic is primary
+  const [mapClickMode, setMapClickMode] = useState(null);   // null | 'start' | 'end' | 'blocked'
+  const [dynStart, setDynStart] = useState(null);
+  const [dynEnd, setDynEnd] = useState(null);
+  const [dynBlocked, setDynBlocked] = useState([]);
+  const [dynRoutes, setDynRoutes] = useState([]);
+  const [dynLoading, setDynLoading] = useState(false);
+  const [dynError, setDynError] = useState(null);
+  const [dynDataStatus, setDynDataStatus] = useState(null);
+  const [dynActiveRoute, setDynActiveRoute] = useState(null);
+  // 'local-graph' | 'osrm' | 'precomputed' | null
+  const [dynRoutingSource, setDynRoutingSource] = useState(null);
+  const [dynFallbackFrom, setDynFallbackFrom] = useState(null);   // 'local-graph' when OSRM used as backup
+  const [dynFallbackReason, setDynFallbackReason] = useState(null);
+  const [dynLimitations, setDynLimitations] = useState(null);
+  const [dynAllAffected, setDynAllAffected] = useState(false);
+  const [dynRequestedCount, setDynRequestedCount] = useState(3);
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
-  const [toggles, setToggles] = useState({ flood: true, wind: true, history: false, cloud: true, satellite: true, sarMask: true, vehicles: true });
+  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false, emergencyPOI: false });
+  const [floodRange, setFloodRange] = useState('7days');
+  const [floodRangeOpen, setFloodRangeOpen] = useState(false);
+  const [histFreqRange, setHistFreqRange] = useState('freq');
+  const [histFreqRangeOpen, setHistFreqRangeOpen] = useState(false);
 
   const [incidents, setIncidents] = useState([]);
   const [toasts, setToasts] = useState([]);
@@ -381,11 +496,13 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
 
-  const [gistdaRiskPoints, setGistdaRiskPoints] = useState(CM_RISK_POINTS);
+  const [gistdaRiskPoints, setGistdaRiskPoints] = useState(CR_RISK_POINTS);
+  const [gistdaLive, setGistdaLive] = useState(false); // true only when API returned (even empty)
 
   // External data sources
-  const [waterLevels, setWaterLevels]   = useState(null);
-  const [damLevels,   setDamLevels]     = useState(null);
+  const [waterLevels, setWaterLevels]       = useState(null);
+  const [showAllRiverLevels, setShowAllRiverLevels] = useState(false);
+  const [damLevels,   setDamLevels]         = useState(null);
   const [shelters,    setShelters]      = useState([]);
   const [tmdWarnings, setTmdWarnings]   = useState(null);
 
@@ -394,15 +511,15 @@ export default function App() {
     B: { vehicle_count: 0, avg_speed: 0, congestion_level: 'unknown', stopped_ratio: 0 },
     C: { vehicle_count: 0, avg_speed: 0, congestion_level: 'unknown', stopped_ratio: 0 },
   });
-  const [briefing, setBriefing] = useState({ text: '', alertLevel: 1, timestamp: '' });
+  const [briefing, setBriefing] = useState({ text: '', alertLevel: 1, timestamp: '', typhoonStatus: 'pending' });
   const [briefingLoading, setBriefingLoading] = useState(false);
 
   const [optimizerRunning, setOptimizerRunning] = useState(false);
   const [optimizerProgress, setOptimizerProgress] = useState(0);
   const [resources, setResources] = useState({ boats: '—', teams: '—', waiting: '—' });
 
-  const [terminalLogs, setTerminalLogs] = useState([]);
-  const [cctvExpanded, setCctvExpanded] = useState(true);
+  const [, setTerminalLogs] = useState([]);
+
 
   const addToast = (text, type = 'info') => {
     const id = Math.random();
@@ -410,16 +527,25 @@ export default function App() {
     setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 6000);
   };
 
-  const addLog = (routeName, warn = false, customReason = null) => {
+  const addLog = (routeName, warn = false, customReason = null, officerOverride = null) => {
     const t = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
     const reasons = [
-      'ดึงข้อมูลดาวเทียม Sentinel-1A ตรวจประเมินพื้นที่แห้งสำเร็จ',
-      'ระดับสัญญาณน้ำล่างเกณฑ์สูงสุด ปลอดภัยในการลุยภารกิจ',
-      'กรมอุตุนิยมวิทยา TMD ยืนยันกระแสฝนลดลง',
+      'ดึงข้อมูลพื้นที่น้ำท่วมจาก GISTDA Flood API สำเร็จ',
+      'ระดับน้ำกกต่ำกว่าเกณฑ์เตือนภัย ปลอดภัยในการปฏิบัติภารกิจ',
+      'กรมอุตุนิยมวิทยา TMD ยืนยันกระแสฝนลดลงในเชียงราย',
     ];
     const reason = customReason || reasons[Math.floor(Math.random() * reasons.length)];
-    const officer = ['วิทยา ล.ศ.', 'สมชาติ พ.ต.ท.', 'นพดล ร.ต.อ.', 'อรรถ จ.ส.ต.'][Math.floor(Math.random() * 4)];
+    const officer = officerOverride || ['วิทยา ล.ศ.', 'สมชาติ พ.ต.ท.', 'นพดล ร.ต.อ.', 'อรรถ จ.ส.ต.'][Math.floor(Math.random() * 4)];
     setDecisionLogs(p => [{ route: routeName, time: t, reason, officer, warn }, ...p.slice(0, 8)]);
+
+    // Persist override to server audit log when it's a human override (officerOverride provided)
+    if (officerOverride) {
+      fetch('/api/override', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routeId: routeName, reason, officer }),
+      }).catch(() => {});
+    }
   };
 
   const fetchVehicleData = async () => {
@@ -431,118 +557,282 @@ export default function App() {
     setBriefingLoading(true);
     try {
       const data = await getAiBriefing();
+      const status = data.typhoonStatus ?? (data.briefing ? 'live' : 'offline');
+      setBriefing({
+        text:         data.briefing ?? '',
+        alertLevel:   data.alert_level ?? 1,
+        timestamp:    data.generated_at ?? '',
+        typhoonStatus: status,
+        fallbackReason: data.fallbackReason ?? null,
+      });
       if (data.briefing) {
-        setBriefing({ text: data.briefing, alertLevel: data.alert_level, timestamp: data.generated_at });
-        addToast('AI สรุปสถานการณ์สำเร็จ', 'success');
+        addToast('Typhoon AI สรุปสถานการณ์สำเร็จ', 'success');
+      } else {
+        addToast(`Typhoon AI offline — ${data.fallbackReason ?? 'ไม่ได้รับ response'}`, 'warn');
       }
+    } catch (e) {
+      setBriefing(prev => ({ ...prev, typhoonStatus: 'offline', fallbackReason: e.message }));
+      addToast('ไม่สามารถเชื่อมต่อ Typhoon AI', 'warn');
     } finally {
       setBriefingLoading(false);
     }
   };
 
-  const fetchGistdaFloodData = async () => {
+  const fetchRouteExplanation = async () => {
+    const routes = ['A', 'B', 'C']
+      .map(id => routePaths[id] ? { id, name: `เส้นทาง ${id}`, risk: routePaths[id].risk, safety: 100 - routePaths[id].risk, features: routePaths[id].features, routingSource: 'precomputed' } : null)
+      .filter(Boolean);
+    if (routes.length === 0) { addToast('ยังไม่มีข้อมูลเส้นทาง — รอโหลดสักครู่', 'warn'); return; }
     try {
-      const res = await fetch('http://localhost:3001/api/gistda/flood');
+      addToast('AI กำลังวิเคราะห์เส้นทาง A/B/C...', 'info');
+      const res = await fetch('/api/explain', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routes }),
+      });
       const data = await res.json();
-      if (Array.isArray(data)) {
-        const pts = data
-          .filter(p => p.province === 'เชียงใหม่' || p.province_name === 'เชียงใหม่' || p.province === 'Chiang Mai')
-          .map(p => ({ name: p.amphoe || p.district || 'GISTDA', lat: parseFloat(p.latitude || p.lat), lon: parseFloat(p.longitude || p.lon), severity: parseFloat(p.severity || 0.8) }));
-        if (pts.length > 0) {
-          setGistdaRiskPoints(pts);
-          addToast(`ดึงข้อมูลจุดเสี่ยงน้ำท่วม GISTDA สำเร็จ (${pts.length} พิกัด)`, 'success');
+      if (data.explanation) {
+        addLog('XAI A/B/C', false, data.explanation.slice(0, 200));
+        addToast('AI อธิบายเส้นทาง A/B/C สำเร็จ', 'success');
+      }
+    } catch (_) { addToast('XAI endpoint ไม่ตอบสนอง', 'warn'); }
+  };
+
+  // Build client-side fallback explanation when Typhoon API is unavailable
+  const buildFallbackXAI = (route, routingSource) => {
+    const f = route.features ?? {};
+    const flood = Math.round((f.f_flood_exposure ?? 0) * 100);
+    const rain  = Math.round((f.f_forecast_rain  ?? 0) * 100);
+    const hist  = Math.round((f.f_historical     ?? 0) * 100);
+    const soil  = Math.round((f.f_soil           ?? 0) * 100);
+    const parts = [];
+    if (flood > 0) parts.push(`ตัดผ่านพื้นที่น้ำท่วม 7 วัน ${flood}%`);
+    else           parts.push(`ไม่ตัดผ่านพื้นที่น้ำท่วมล่าสุด`);
+    if (rain > 5)  parts.push(`ฝนคาดการณ์ ${rain}%`);
+    else           parts.push(`ฝนคาดการณ์ต่ำ`);
+    if (hist > 0)  parts.push(`ประวัติน้ำท่วมพื้นที่ ${hist}%`);
+    if (soil > 0)  parts.push(`ความชุ่มชื้นดิน ${soil}%`);
+    if ((route.blockedPenalty ?? 0) > 0) parts.push(`บวกโทษจุดปิดถนน +${route.blockedPenalty}%`);
+    const srcLabel = routingSource === 'local-graph' ? 'Local Graph' : routingSource === 'osrm' ? 'OSRM' : routingSource === 'precomputed' ? 'Precomputed' : 'ML';
+    return `${route.name ?? route.id} [${srcLabel}] ความเสี่ยง ${route.risk}%: ${parts.join(' · ')}`;
+  };
+
+  // Per-route XAI — works for both dynamic and precomputed routes
+  const fetchRouteXAI = async (route, routingSource = 'unknown') => {
+    const label = route.name ?? route.id;
+    addToast(`🔍 AI กำลังวิเคราะห์ ${label}...`, 'info');
+    const payload = {
+      id: route.id, name: label,
+      risk: route.risk, safety: route.safety ?? (100 - route.risk),
+      distanceKm: route.distanceKm ?? route.distance_km,
+      durationMin: route.durationMin ?? route.duration_min,
+      features: route.features ?? {},
+      blockedExposure: route.blockedExposure ?? 0,
+      blockedPenalty:  route.blockedPenalty  ?? 0,
+      routingSource,
+    };
+    try {
+      const res = await fetch('/api/explain', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routes: [payload] }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.explanation) {
+        addLog(`XAI: ${label}`, false, data.explanation.slice(0, 200));
+        addToast('AI อธิบายสำเร็จ — ดูใน Decision Log', 'success');
+      } else throw new Error(data.error ?? 'no explanation');
+    } catch (e) {
+      // Fallback: client-side explanation from factor values
+      const fallback = buildFallbackXAI(route, routingSource);
+      addLog(`XAI (offline): ${label}`, false, fallback);
+      addToast('Typhoon AI ไม่ตอบ — แสดง factor analysis แทน', 'warn');
+    }
+  };
+
+  const fetchGistdaFloodData = async (range = floodRange) => {
+    try {
+      const res = await fetch(`/api/gistda/flood?range=${range}`);
+      if (!res.ok) throw new Error(`GISTDA API ${res.status}`);
+      const data = await res.json();
+      const features = data?.features ?? [];
+      setGistdaLive(true); // API responded — hide hardcoded fallback regardless of count
+      if (features.length === 0) {
+        addToast(`GISTDA: ไม่พบพื้นที่น้ำท่วม (${range})`, 'info');
+        setGistdaRiskPoints([]); // clear hardcoded fallback
+        return;
+      }
+      const pts = features.map(f => {
+        const p = f.properties ?? {};
+        // คำนวณ centroid จาก geometry สำหรับ fallback marker
+        let lon = null, lat = null;
+        if (f.geometry?.type === 'Point') {
+          [lon, lat] = f.geometry.coordinates;
+        } else if (f.geometry?.coordinates) {
+          const ring = f.geometry.coordinates[0];
+          const lons = ring.map(c => c[0]);
+          const lats = ring.map(c => c[1]);
+          lon = lons.reduce((a, b) => a + b, 0) / lons.length;
+          lat = lats.reduce((a, b) => a + b, 0) / lats.length;
         }
+        return {
+          name:     p.tb_tn || p.ap_tn || p.pv_tn || 'GISTDA',
+          tb_idn:   p.tb_idn,
+          ap_idn:   p.ap_idn,
+          lat, lon,
+          severity: parseFloat(p.area_rai ? Math.min(p.area_rai / 10000, 1) : 0.8),
+          geometry: f.geometry ?? null,
+        };
+      }).filter(pt => pt.lat && pt.lon);
+      if (pts.length > 0) {
+        setGistdaRiskPoints(pts);
+        addToast(`ดึงข้อมูลจุดเสี่ยงน้ำท่วม GISTDA สำเร็จ (${pts.length} พื้นที่)`, 'success');
       }
     } catch (_) {}
   };
 
   const fetchRegionalWeather = async () => {
+    const settled = await Promise.allSettled(
+      WEATHER_STATIONS.map(st =>
+        getHourlyForecast(st.lat, st.lon).then(data => ({ id: st.id, data }))
+      )
+    );
+
     const results = {};
-    let successCount = 0;
-    for (const st of WEATHER_STATIONS) {
-      try {
-        const data = await getHourlyForecast(st.lat, st.lon);
-        if (data?.WeatherForecasts?.[0]?.forecasts?.[0]) {
-          results[st.id] = data.WeatherForecasts[0].forecasts[0].data;
-          successCount++;
-        }
-      } catch(_) {}
-    }
+    settled.forEach(r => {
+      if (r.status === 'fulfilled') {
+        const { id, data } = r.value;
+        const forecast = data?.WeatherForecasts?.[0]?.forecasts?.[0]?.data;
+        if (forecast) results[id] = forecast;
+      }
+    });
+    const successCount = Object.keys(results).length;
 
     if (successCount > 0) {
       setStationData(results);
       addToast(`เชื่อมต่อข้อมูลอากาศ TMD สำเร็จ (${successCount} สถานี)`, 'success');
     } else {
-      // TMD server offline or token expired fallback
+      // Both TMD and Open-Meteo unavailable — last-resort static climatological normals
       const fallbacks = {
-        'CM_CITY': { tc: 27.8, rr: 2.5, ws: 3.2, wd: 220 },
-        'MAE_RIM': { tc: 22.4, rr: 12.4, ws: 5.6, wd: 180 },
-        'MAE_TAENG': { tc: 28.1, rr: 6.2, ws: 4.1, wd: 200 },
-        'SAN_SAI': { tc: 26.5, rr: 1.5, ws: 1.8, wd: 90 },
-        'HANG_DONG': { tc: 26.0, rr: 4.8, ws: 2.0, wd: 100 },
-        'SAN_KAMPHAENG': { tc: 27.0, rr: 8.5, ws: 3.0, wd: 210 },
+        'CR_CITY':       { tc: 27.5, rr: 3.2, ws: 2.8, wd: 200 },
+        'MAE_SAI':       { tc: 25.8, rr: 14.2, ws: 5.1, wd: 175 },
+        'WIANG_PA_PAO':  { tc: 24.1, rr: 18.6, ws: 6.3, wd: 185 },
+        'THOENG':        { tc: 26.3, rr: 7.4, ws: 3.5, wd: 195 },
+        'PHAN':          { tc: 27.0, rr: 2.1, ws: 2.0, wd: 90 },
+        'CHIANG_KHONG':  { tc: 28.5, rr: 4.5, ws: 3.0, wd: 210 },
       };
       setStationData(fallbacks);
       addToast('⚠️ เชื่อมต่อ TMD ล้มเหลว — ดึงข้อมูลคาดการณ์เชิงสถิติของจังหวัดแทน', 'warn');
     }
   };
 
-  const cityCur = stationData['CM_CITY'] || { tc: null, rr: null, ws: null, wd: null };
+  const cityCur = stationData['CR_CITY'] || { tc: null, rain: null, ws10m: null, wd10m: null };
 
   const fetchRealRoutes = async () => {
-    const coords = {
-      A: [[98.985, 18.788], [99.018, 18.825]],
-      B: [[98.985, 18.788], [98.950, 18.805]],
-      C: [[98.985, 18.788], [99.005, 18.792]],
-    };
-
-    const [mlRisks, ...osrmResults] = await Promise.allSettled([
-      getRouteRisk(),
-      ...['A', 'B', 'C'].map(id =>
-        fetch(`https://router.project-osrm.org/route/v1/driving/${coords[id][0][0]},${coords[id][0][1]};${coords[id][1][0]},${coords[id][1][1]}?overview=full&geometries=geojson`)
-          .then(r => r.json())
-      ),
-    ]);
-
-    const mlData = mlRisks.status === 'fulfilled' ? mlRisks.value : null;
-    const paths = {};
-
-    ['A', 'B', 'C'].forEach((id, i) => {
-      const osrm = osrmResults[i];
-      if (osrm.status !== 'fulfilled' || !osrm.value.routes?.[0]) return;
-      const route = osrm.value.routes[0];
-      const points = route.geometry.coordinates.map(c => ({ lon: c[0], lat: c[1] }));
-
-      let risk, depth;
-      if (mlData?.[id]) {
-        risk  = mlData[id].risk;
-        depth = mlData[id].depth_est;
-      } else {
-        // Geometric fallback when ML endpoint unavailable
+    try {
+      const data = await fetch('/api/flood-routes').then(r => r.json());
+      const paths = {};
+      for (const [id, route] of Object.entries(data)) {
+        if (!route.points?.length) continue;
+        paths[id] = {
+          points:   route.points,
+          distance: route.distance_km?.toFixed(1) ?? '—',
+          duration: route.duration_min ?? 0,
+          risk:     route.risk  ?? 0,
+          depth:    route.depth ?? 0,
+          features: route.features ?? {},
+        };
+      }
+      setRoutePaths(paths);
+      setRouteSource('live');
+      if (data._meta?.dataStatus) setRouteDataStatus(data._meta.dataStatus);
+    } catch {
+      // Geometric fallback when backend unavailable
+      setRouteSource('client-estimate');
+      setRouteDataStatus(null);
+      const fallbackCoords = {
+        A: [[99.832,19.908],[99.850,20.025],[99.866,20.175],[99.882,20.434]],
+        B: [[99.832,19.908],[99.900,19.924],[99.983,19.952],[100.074,19.977]],
+        C: [[99.832,19.908],[99.840,19.808],[99.851,19.600],[99.858,19.375]],
+      };
+      const paths = {};
+      ['A','B','C'].forEach(id => {
+        const points = fallbackCoords[id].map(([lon, lat]) => ({ lon, lat }));
         let score = 0;
         points.forEach(p => {
           gistdaRiskPoints.forEach(pt => { const d = getDist(p, pt); if (d < 1200) score += (1 - d/1200) * pt.severity; });
           incidents.forEach(inc => { const d = getDist(p, inc); if (d < 1200) score += (1 - d/1200) * inc.severity * 2.5; });
         });
-        const rain = Math.max(1, (cityCur.rr || 0) / 4);
-        risk  = Math.min(Math.round((score / points.length) * 1000 * rain), 99);
-        depth = Math.max(0.1, risk / 65).toFixed(1);
-      }
+        const rain = Math.max(1, (cityCur.rain || 0) / 4);
+        const risk  = Math.min(Math.round((score / points.length) * 1000 * rain), 99);
+        paths[id] = { points, distance: '—', duration: 0, risk, depth: Math.max(0.1, risk / 65).toFixed(1) };
+      });
+      setRoutePaths(paths);
+    }
+  };
 
-      paths[id] = {
-        points,
-        distance: (route.distance / 1000).toFixed(1),
-        duration: Math.round(route.duration / 60),
-        risk,
-        depth,
-      };
-    });
+  const handleMapClick = ({ lat, lon }) => {
+    if (mapClickMode === 'start') {
+      setDynStart({ lat, lon });
+      setMapClickMode(null);
+    } else if (mapClickMode === 'end') {
+      setDynEnd({ lat, lon });
+      setMapClickMode(null);
+    } else if (mapClickMode === 'blocked') {
+      setDynBlocked(prev => [...prev, { lat, lon, radiusM: 500, reason: 'Road closure' }]);
+      // stay in blocked mode so user can add multiple points
+    }
+  };
 
-    setRoutePaths(paths);
+  const fetchDynamicRoutes = async () => {
+    if (!dynStart || !dynEnd) { addToast('กรุณาเลือกจุดเริ่มต้นและปลายทางก่อน', 'warn'); return; }
+    setDynLoading(true);
+    setDynError(null);
+    setDynRoutes([]);
+    setDynRoutingSource(null);
+    setDynFallbackFrom(null);
+    setDynFallbackReason(null);
+    setDynLimitations(null);
+    setDynAllAffected(false);
+    const REQUESTED = 3;
+    setDynRequestedCount(REQUESTED);
+    try {
+      const res = await fetch('/api/dynamic-routes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: dynStart, end: dynEnd, blockedPoints: dynBlocked, avoidFlood: true, routeCount: REQUESTED }),
+      });
+      const data = await res.json();
+      if (!res.ok && !data.routes?.length) throw new Error(data.error ?? 'Routing failed');
+      const meta = data._meta ?? {};
+
+      // Determine routing source — only precomputed when backend explicitly says so
+      const isPrecomputed = meta.fallbackType === 'precomputed' || meta.mode === 'fixed-fallback';
+      const source = meta.mode === 'local-graph' ? 'local-graph'
+                   : isPrecomputed              ? 'precomputed'
+                   :                             'osrm';
+      setDynRoutingSource(source);
+      setDynFallbackFrom(meta.fallbackFrom ?? null);
+      if (isPrecomputed) setDynFallbackReason(meta.fallbackReason ?? 'Routing unavailable for this area');
+
+      setDynRoutes(data.routes ?? []);
+      setDynDataStatus(meta.dataStatus ?? null);
+      setDynLimitations(meta.limitations ?? null);
+      setDynAllAffected(meta.allRoutesAffected === true);
+      if (data.routes?.length) setDynActiveRoute(data.routes[0].id);
+
+      const count = data.routes?.length ?? 0;
+      const toastSuffix = isPrecomputed ? ' (Precomputed Fallback — เชียงรายเท่านั้น)' : '';
+      addToast(`พบ ${count} เส้นทาง${toastSuffix} — เรียงจากความเสี่ยงต่ำสุด`, isPrecomputed ? 'warn' : 'success');
+    } catch (e) {
+      setDynError(e.message);
+      addToast(`Dynamic routing ล้มเหลว: ${e.message}`, 'warn');
+    } finally {
+      setDynLoading(false);
+    }
   };
 
   useEffect(() => {
-    const mapKey = import.meta.env.VITE_GISTDA_MAP_KEY || 'E65AB56FC36F4ACD986975AF7C570DEC';
+    const mapKey = import.meta.env.VITE_GISTDA_MAP_KEY;
     const scriptId = 'gistda-sphere-map-sdk';
     if (!document.getElementById(scriptId)) {
       const s = document.createElement('script');
@@ -569,6 +859,22 @@ export default function App() {
     };
     fetchLogs();
 
+    // Hydrate persisted human override logs from server (Supabase-backed)
+    fetch('/api/override/log')
+      .then(r => r.json())
+      .then(logs => {
+        if (logs?.length) {
+          setDecisionLogs(logs.slice(0, 9).map(l => ({
+            route:   l.routeId,
+            time:    new Date(l.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+            reason:  l.reason,
+            officer: l.officer,
+            warn:    true,
+          })));
+        }
+      })
+      .catch(() => {});
+
     const trafficInt  = setInterval(fetchVehicleData, 15000);
     const briefInt    = setInterval(fetchBriefing, 10 * 60 * 1000);
     const logsInt     = setInterval(fetchLogs, 10000);
@@ -579,7 +885,7 @@ export default function App() {
 
     setChatMessages([{
       role: 'ai',
-      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัยเชียงใหม่<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA sphere · TMD · OSRM · Supabase CCTV</span>',
+      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัย<strong>เชียงราย</strong><br/>ครอบคลุม 4 อำเภอ: เมือง · แม่สาย · เทิง · เวียงป่าเป้า<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA Flood WMS/API · TMD NWP · NetworkX A* · Supabase CCTV · Open-Meteo</span>',
       time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
     }]);
 
@@ -592,6 +898,42 @@ export default function App() {
   useEffect(() => {
     if (Object.keys(stationData).length > 0) fetchRealRoutes();
   }, [stationData, incidents, gistdaRiskPoints]);
+
+  // Reset scroll to top when switching route modes so the toggle is always visible
+  useEffect(() => {
+    if (leftPanelScrollRef.current) leftPanelScrollRef.current.scrollTop = 0;
+  }, [routeMode]);
+
+  useEffect(() => {
+    setGistdaRiskPoints([]);
+    setGistdaLive(false);
+    fetchGistdaFloodData(floodRange);
+  }, [floodRange]);
+
+  // Build route context from current UI state for Typhoon AI
+  const buildRouteContext = () => {
+    if (routeMode === 'dynamic' && dynRoutes.length > 0) {
+      return {
+        mode: 'dynamic', activeRouteId: dynActiveRoute, routingSource: dynRoutingSource,
+        routes: dynRoutes.map(r => ({
+          id: r.id, name: r.name, risk: r.risk, safety: r.safety,
+          distanceKm: r.distanceKm, durationMin: r.durationMin,
+          features: r.features, blockedExposure: r.blockedExposure ?? 0, blockedPenalty: r.blockedPenalty ?? 0,
+        })),
+        dataStatus: dynDataStatus,
+      };
+    }
+    const routes = allRoutesData.filter(r => r.risk != null);
+    if (!routes.length) return null;
+    return {
+      mode: 'fixed', activeRouteId: activeRoute, routingSource: 'precomputed',
+      routes: routes.map(r => ({
+        id: r.id, name: r.name, risk: r.risk ?? 0, safety: 100 - (r.risk ?? 0),
+        distanceKm: r.distance, durationMin: r.duration, features: r.features,
+      })),
+      dataStatus: routeDataStatus,
+    };
+  };
 
   const sendChat = async (presetText = null) => {
     const msg = (presetText ?? chatInput).trim();
@@ -606,15 +948,15 @@ export default function App() {
     }));
 
     try {
-      const res = await fetch('http://localhost:3001/api/ai/chat', {
+      const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, history: historyPayload }),
+        body: JSON.stringify({ message: msg, history: historyPayload, routeContext: buildRouteContext() }),
       });
       const data = await res.json();
       setIsTyping(false);
       if (data.reply) {
-        setChatMessages(p => [...p, { role: 'ai', html: data.reply, toolCall: data.toolCall, time: clock.slice(0, 5) }]);
+        setChatMessages(p => [...p, { role: 'ai', html: data.reply, toolCall: data.toolCall, time: clock.slice(0, 5), isOffline: false }]);
         if (data.toolCall) executeAiTool(data.toolCall);
       }
     } catch (_) {
@@ -635,18 +977,21 @@ export default function App() {
 
   const runOfflineParser = (text) => {
     const l = text.toLowerCase();
-    let reply = 'ยินดีรับคำถามครับ — สอบถามเส้นทาง A B C สภาพอากาศ หรือสั่งปักหมุดจุดน้ำท่วมได้เลย';
+    const ctx = buildRouteContext();
+    let reply = 'ขณะนี้ Typhoon AI offline — ระบบยังแสดง route risk จากโมเดลหลักได้ กรุณาดู route cards หรือกดปุ่ม 🔍 XAI เพื่อดูเหตุผลความเสี่ยง';
     let toolCall = null;
-    if (l.includes('กาดก้อม') || l.includes('ท่วม') || l.includes('หลาก')) {
-      reply = '⚠️ ตรวจพบจุดเสี่ยง <strong>กาดก้อม</strong> น้ำลึก 1.5 ม. — กำลังปักหมุดบนแผนที่...';
-      toolCall = { name: 'addIncident', arguments: { name: 'กาดก้อม', lat: 18.775, lon: 98.988, depth: 1.5, severity: 0.95 } };
-    } else if (l.includes('จัดสรร') || l.includes('เรือ') || l.includes('ทรัพยากร')) {
-      reply = '🤖 กำลังวิเคราะห์จัดสรรทรัพยากรกู้ภัย...';
+
+    if (/ท่วม|หลาก|ถล่ม|blocked|flood|landslide/i.test(text)) {
+      reply = '⚠️ [Offline] รับทราบรายงาน — ใช้ปุ่ม "Add Road Closure" บนแผนที่เพื่อปักหมุดจุดเสี่ยงได้โดยตรง (Typhoon AI ไม่พร้อม)';
+    } else if (/จัดสรร|เรือ|ทรัพยากร/i.test(text)) {
+      reply = '[Offline] เปิด Demo Resource Simulation...';
       toolCall = { name: 'optimizeAllocation', arguments: {} };
-    } else if (l.includes('เส้น b') || l.includes('ทล.118')) {
-      reply = '🚧 <strong>เส้นทาง B:</strong> น้ำท่วมปานกลาง ความเสี่ยง 48% ควรระวังสะพานข้ามห้วย';
+    } else if (/เส้น|route|ปลอดภัย|เสี่ยง|ความเสี่ยง/i.test(text) && ctx?.routes?.length) {
+      const active = ctx.routes.find(r => r.id === ctx.activeRouteId) ?? ctx.routes[0];
+      reply = `[Offline] ${active.name ?? active.id}: ความเสี่ยง ${active.risk}% (ML model) — กด 🔍 XAI เพื่อดูเหตุผลละเอียด`;
     }
-    setChatMessages(p => [...p, { role: 'ai', html: reply, toolCall, time: clock.slice(0, 5) }]);
+
+    setChatMessages(p => [...p, { role: 'ai', html: reply, toolCall, time: clock.slice(0, 5), isOffline: true }]);
     if (toolCall) executeAiTool(toolCall);
   };
 
@@ -666,14 +1011,25 @@ export default function App() {
     }, 100);
   };
 
+  const maxRainStation = WEATHER_STATIONS.reduce(
+    (best, st) => {
+      const val = stationData[st.id]?.rain || 0;
+      return val > best.val ? { name: st.name, val } : best;
+    },
+    { name: null, val: -1 }
+  );
+
   const filteredRiskPoints = (gistdaRiskPoints || []).filter(pt => {
     if (!geoSearch) return true;
     const s = geoSearch.toLowerCase();
     return pt.name.toLowerCase().includes(s) || pt.lat.toString().includes(s) || pt.lon.toString().includes(s);
   });
 
+  const isPrecomputedFallback = dynRoutingSource === 'precomputed';
   const activeData = { ...ROUTES_BASE.find(r => r.id === activeRoute), ...routePaths[activeRoute] };
   const allRoutesData = ROUTES_BASE.map(r => ({ ...r, ...routePaths[r.id] }));
+
+  // Flood depth per route from nearest river station — max(0, level - warning_level) in metres
 
   // TMD warnings take priority over AI briefing for alert level
   const tmdAlertText = tmdWarnings?.warnings?.[0]?.description ?? tmdWarnings?.data?.[0]?.warning ?? null;
@@ -684,147 +1040,565 @@ export default function App() {
   return (
     <div id="app-container">
 
-      {/* Toast notifications */}
+      {/* Toasts */}
       <div className="toast-container">
         {toasts.map(t => (
-          <div key={t.id} className={`toast ${t.type === 'success' ? 'success' : t.type === 'warn' ? 'warn' : ''}`}>
+          <div key={t.id} className={`toast-v2 ${t.type === 'success' ? 'success' : t.type === 'warn' ? 'warn' : ''}`}>
             <span>{t.type === 'success' ? '✓' : t.type === 'warn' ? '⚠' : '●'}</span>
             <span>{t.text}</span>
           </div>
         ))}
       </div>
 
-      {/* ── Double Header ── */}
-      <header className="gov-double-header no-print">
-        <div className="gov-header-row-1">
-          <div className="gov-platform-title">
-            <span className="gov-seal-icon">🛡️</span>
-            <div className="header-title">
-              <h1 style={{ fontSize: '15px', fontWeight: '800', letterSpacing: '0.5px' }}>ศูนย์บัญชาการสถานการณ์ภัยพิบัติแห่งชาติ (GISTDA National Disaster Command Center)</h1>
-              <span style={{ fontSize: '9px', color: 'var(--text-3)' }}>CO-OPERATIONAL PORTAL · GISTDA · TMD · DDPM</span>
-            </div>
-          </div>
-
-          <div className="header-center">
-            <div className="status-chip province">
-              <span className="status-dot live" />
-              เชียงใหม่
-            </div>
-            <div className={`status-chip ${alertLevelClass}`}>
-              <span className="status-dot live" />
-              ระดับแจ้งเตือน {alertLevel}
-            </div>
-          </div>
-
-          <div className="header-right">
-            <div className="weather-strip">
-              <div className="weather-strip-item">
-                <label>อุณหภูมิ</label>
-                <strong>{cityCur.tc != null ? `${cityCur.tc.toFixed(1)}°C` : '—'}</strong>
-              </div>
-              <div className="weather-strip-item">
-                <label>ฝน</label>
-                <strong>{cityCur.rr != null ? `${cityCur.rr.toFixed(1)} mm` : '—'}</strong>
-              </div>
-              <div className="weather-strip-item">
-                <label>ลม</label>
-                <strong>{cityCur.ws != null ? `${cityCur.ws.toFixed(1)} m/s` : '—'}</strong>
-              </div>
-            </div>
-            <div className="header-clock">{clock}</div>
+      {/* ── Compact Header ── */}
+      <header className="app-header no-print">
+        <div className="header-brand">
+          <span className="header-brand-icon">🛡️</span>
+          <div className="header-brand-text">
+            <h1>FloodNav · เชียงราย</h1>
+            <span>GISTDA · TMD · DDPM</span>
           </div>
         </div>
+        <div className="header-div" />
 
-        <div className="gov-header-row-2">
-          <nav className="gov-nav-tabs">
-            <button className={`gov-tab-btn ${activeTab === 'cockpit' ? 'active' : ''}`} onClick={() => setActiveTab('cockpit')}>
-              📡 ศูนย์บัญชาการหลัก (Tactical Cockpit)
-            </button>
-            <button className={`gov-tab-btn ${activeTab === 'geospatial' ? 'active' : ''}`} onClick={() => setActiveTab('geospatial')}>
-              🛰️ วิเคราะห์สารสนเทศภูมิศาสตร์ (Geospatial Analysis)
-            </button>
-            <button className={`gov-tab-btn ${activeTab === 'resources' ? 'active' : ''}`} onClick={() => setActiveTab('resources')}>
-              👥 การจัดสรรกำลังพลและกู้ชีพ (Logistics Planner)
-            </button>
-            <button className={`gov-tab-btn ${activeTab === 'executive' ? 'active' : ''}`} onClick={() => setActiveTab('executive')}>
-              📊 สรุปสถานการณ์ระดับผู้บริหาร (Executive Report)
-            </button>
-          </nav>
+        <div className="header-weather">
+          <div className="weather-pill">
+            <span className="wlabel">°C</span>
+            <strong>{cityCur.tc != null ? `${cityCur.tc.toFixed(1)}°` : '—'}</strong>
+          </div>
+          <div className="weather-pill">
+            <span className="wlabel">ฝน</span>
+            <strong>{cityCur.rain != null ? `${cityCur.rain.toFixed(1)} mm` : '—'}</strong>
+          </div>
+          <div className="weather-pill">
+            <span className="wlabel">ลม</span>
+            <strong>{cityCur.ws10m != null ? `${cityCur.ws10m.toFixed(1)} m/s` : '—'}</strong>
+          </div>
+          {hasTmdWarning && (
+            <div className="weather-pill" style={{ borderColor: 'var(--danger)', background: 'var(--danger-dim)' }}>
+              <span style={{ color: 'var(--danger)', fontSize: 10, fontWeight: 700 }}>⚠ TMD</span>
+            </div>
+          )}
+        </div>
+
+        <div className="header-right">
+          <div className={`alert-chip level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1}`}>
+            <span className="status-dot live" />
+            เฝ้าระวัง {alertLevel}
+          </div>
+          <div className="header-clock">{clock}</div>
+          <div className="header-nav-btns">
+            <button className={`header-nav-btn ${activeTab === 'cockpit' ? 'active' : ''}`} onClick={() => setActiveTab('cockpit')}>แผนที่</button>
+            <button className={`header-nav-btn ${activeTab === 'geospatial' ? 'active' : ''}`} onClick={() => setActiveTab('geospatial')}>GIS</button>
+            <button className={`header-nav-btn ${activeTab === 'resources' ? 'active' : ''}`} onClick={() => setActiveTab('resources')}>ทรัพยากร</button>
+            <button className={`header-nav-btn ${activeTab === 'executive' ? 'active' : ''}`} onClick={() => setActiveTab('executive')}>รายงาน</button>
+          </div>
         </div>
       </header>
 
-      {/* ── Alert Banner — TMD warning overrides AI briefing ── */}
-      <div className={`alert-banner level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1}${hasTmdWarning ? ' tmd-warning' : ''}`}>
-        <span className="alert-banner-icon">
-          {alertLevel >= 3 ? '🔴' : alertLevel === 2 ? '🟡' : '🔵'}
-        </span>
-        <span className="alert-banner-text">
+      {/* ── Alert bar ── */}
+      <div className={`alert-bar level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1} no-print`}>
+        <span>{alertLevel >= 3 ? '🔴' : alertLevel === 2 ? '🟡' : '🔵'}</span>
+        <span className="alert-bar-txt">
           {hasTmdWarning
-            ? `[TMD แจ้งเตือนทางการ] ${tmdAlertText}`
+            ? `[TMD แจ้งเตือน] ${tmdAlertText}`
             : briefingLoading
-              ? 'กำลังประมวลผลสถานการณ์...'
-              : (briefing.text || 'ระบบพร้อมปฏิบัติการ — กำลังประเมินสถานการณ์น้ำท่วมพื้นที่เชียงใหม่')}
+              ? 'กำลังรับสรุปสถานการณ์จาก Typhoon AI...'
+              : briefing.text
+                ? briefing.text
+                : briefing.typhoonStatus === 'offline'
+                  ? `⚠ Typhoon AI offline — แสดงระดับเฝ้าระวัง ${alertLevel} จากข้อมูลเซ็นเซอร์ (TMD/CCTV) เท่านั้น`
+                  : briefing.typhoonStatus === 'pending'
+                    ? 'กำลังเชื่อมต่อ Typhoon AI...'
+                    : 'ระบบพร้อม — กด รีเฟรช เพื่อรับสรุปสถานการณ์'}
         </span>
         {briefing.timestamp && !hasTmdWarning && (
-          <span className="alert-banner-meta">{briefing.timestamp}</span>
+          <span className="alert-bar-meta">{briefing.timestamp}</span>
         )}
-        <button className="alert-banner-refresh" onClick={fetchBriefing} disabled={briefingLoading}>
+        <button className="alert-bar-refresh" onClick={fetchBriefing} disabled={briefingLoading}>
           {briefingLoading ? '...' : 'รีเฟรช'}
         </button>
       </div>
 
-      {/* ── Main Layout ── */}
+      {/* ── 3-Column Cockpit ── */}
       {activeTab === 'cockpit' && (
-        <div className="main-layout">
+        <div className="main-3col">
 
-        {/* ── Map Section ── */}
-        <section className="map-section">
+          {/* LEFT: Route cards + toggles + log */}
+          <aside className="left-panel">
 
-          {/* Top-left map badge */}
-          <div className="map-badge map-badge-tl">
-            <span className="status-dot live" style={{ background: 'var(--safe)' }} />
-            GISTDA sphere · SAR · {new Date().toLocaleDateString('th-TH')}
-          </div>
+            {/* Route mode toggle — outside scroll container so it never scrolls away */}
+            <div style={{ padding: '8px 10px 0', flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', gap: 0, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)', marginBottom: 8 }}>
+                {[['fixed','Precomputed Routes'],['dynamic','Dynamic Routing']].map(([mode, label]) => (
+                  <button key={mode} onClick={() => setRouteMode(mode)} style={{ flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 700, cursor: 'pointer', border: 'none', background: routeMode === mode ? 'var(--blue-primary)' : 'var(--bg-panel-alt)', color: routeMode === mode ? '#fff' : 'var(--text-3)', letterSpacing: '0.3px' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-          {/* CCTV Drawer */}
-          <div className={`cctv-drawer ${cctvExpanded ? '' : 'collapsed'}`}>
-            <div className="cctv-drawer-header">
-              <span>กล้อง CCTV</span>
-              <button
-                onClick={() => setCctvExpanded(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 11, lineHeight: 1 }}
-              >✕</button>
-            </div>
-            <div className="cctv-feed">
-              <span className="cctv-feed-id">CAM-01</span>
-              <span className="cctv-feed-name">ทล.1 สายเหนือ</span>
-              <span className="cctv-feed-count">{vehicleData.A?.vehicle_count ?? 0} คัน</span>
-            </div>
-            <div className="cctv-feed">
-              <span className="cctv-feed-id">CAM-02</span>
-              <span className="cctv-feed-name">ทล.1 สายใต้</span>
-              <span className="cctv-feed-count">{vehicleData.A?.vehicle_count ?? 0} คัน</span>
-            </div>
-            <div className="cctv-feed">
-              <span className="cctv-feed-id">CAM-03</span>
-              <span className="cctv-feed-name">ทล.118 ดอยสะเก็ด</span>
-              <span className="cctv-feed-count">{vehicleData.B?.vehicle_count ?? 0} คัน</span>
-            </div>
-            <div className="cctv-feed">
-              <span className="cctv-feed-id">CAM-04</span>
-              <span className="cctv-feed-name">สันทราย สายรอง</span>
-              <span className="cctv-feed-count">{vehicleData.C?.vehicle_count ?? 0} คัน</span>
-            </div>
-          </div>
+            <div className="left-panel-scroll" ref={leftPanelScrollRef}>
 
-          {!cctvExpanded && (
-            <button className="cctv-toggle-btn" onClick={() => setCctvExpanded(true)}>
-              ▶ CCTV
-            </button>
-          )}
+              {/* Dynamic Routing Control Panel */}
+              {routeMode === 'dynamic' && (
+                <div className="panel-section" style={{ paddingBottom: 12 }}>
+                  <div className="section-header">
+                    <span className="section-title">Dynamic Routing</span>
+                    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                      {isPrecomputedFallback && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)55' }}>⚠ PRECOMPUTED</span>
+                      )}
+                      {dynRoutingSource === 'local-graph' && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(34,197,94,0.15)', color: 'var(--safe)', border: '1px solid var(--safe)55' }}>LOCAL GRAPH</span>
+                      )}
+                      {dynRoutingSource === 'osrm' && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(59,130,246,0.15)', color: 'var(--blue-primary)', border: '1px solid var(--blue-primary)55' }}>
+                          {dynFallbackFrom === 'local-graph' ? 'OSRM (local unavail.)' : 'OSRM'}
+                        </span>
+                      )}
+                      {!dynRoutingSource && (
+                        <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(59,130,246,0.15)', color: 'var(--blue-primary)', border: '1px solid var(--blue-primary)55' }}>LOCAL + ML</span>
+                      )}
+                    </div>
+                  </div>
+                  {isPrecomputedFallback && dynFallbackReason && (
+                    <div style={{ marginBottom: 8, padding: '4px 8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, fontSize: 9, color: 'var(--warn)' }}>
+                      {dynFallbackReason} — แสดงเส้นทาง Precomputed แทน
+                    </div>
+                  )}
+                  {dynRoutingSource === 'osrm' && dynFallbackFrom === 'local-graph' && (
+                    <div style={{ marginBottom: 8, padding: '4px 8px', background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.25)', borderRadius: 4, fontSize: 9, color: 'var(--blue-primary)' }}>
+                      Local graph unavailable — ใช้ OSRM public API (เส้นทาง Dynamic ยังใช้งานได้)
+                    </div>
+                  )}
 
-          {/* Map */}
-          <div className="map-inner">
+                  {/* Start / End / Blocked controls */}
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+                    {[
+                      { key: 'start', label: '📍 จุดเริ่มต้น', mode: 'start', val: dynStart, color: '#22c55e' },
+                      { key: 'end',   label: '🏁 ปลายทาง',    mode: 'end',   val: dynEnd,   color: '#ef4444' },
+                    ].map(({ key, label, mode, val, color }) => (
+                      <div key={key} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <button
+                          onClick={() => setMapClickMode(prev => prev === mode ? null : mode)}
+                          style={{ flex: 1, padding: '4px 8px', fontSize: 10, fontWeight: 700, borderRadius: 4, cursor: 'pointer', border: `1px solid ${mapClickMode === mode ? color : 'var(--border)'}`, background: mapClickMode === mode ? `${color}22` : 'var(--bg-panel-alt)', color: mapClickMode === mode ? color : 'var(--text-2)' }}
+                        >{mapClickMode === mode ? '✓ คลิกแผนที่...' : label}</button>
+                        {val && <span style={{ fontSize: 9, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{val.lat.toFixed(3)}, {val.lon.toFixed(3)}</span>}
+                        {val && <button onClick={() => { if (key === 'start') setDynStart(null); else setDynEnd(null); }} style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 12, padding: 0 }}>✕</button>}
+                      </div>
+                    ))}
+
+                    {/* Blocked points */}
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <button
+                        onClick={() => setMapClickMode(prev => prev === 'blocked' ? null : 'blocked')}
+                        style={{ flex: 1, padding: '4px 8px', fontSize: 10, fontWeight: 700, borderRadius: 4, cursor: 'pointer', border: `1px solid ${mapClickMode === 'blocked' ? '#f59e0b' : 'var(--border)'}`, background: mapClickMode === 'blocked' ? 'rgba(245,158,11,0.12)' : 'var(--bg-panel-alt)', color: mapClickMode === 'blocked' ? '#f59e0b' : 'var(--text-2)' }}
+                      >⛔ {mapClickMode === 'blocked' ? 'คลิกแผนที่...' : 'เพิ่มจุดปิดถนน'}</button>
+                      {dynBlocked.length > 0 && (
+                        <span style={{ fontSize: 9, color: '#f59e0b' }}>{dynBlocked.length} จุด</span>
+                      )}
+                      {dynBlocked.length > 0 && (
+                        <button onClick={() => setDynBlocked([])} style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 11, padding: 0 }}>ล้าง</button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Find routes button */}
+                  <button
+                    onClick={fetchDynamicRoutes}
+                    disabled={dynLoading || !dynStart || !dynEnd}
+                    style={{ width: '100%', padding: '7px 0', fontSize: 11, fontWeight: 700, borderRadius: 5, cursor: (!dynStart || !dynEnd || dynLoading) ? 'not-allowed' : 'pointer', background: (dynStart && dynEnd && !dynLoading) ? 'var(--blue-primary)' : 'var(--bg-panel-alt)', color: (dynStart && dynEnd && !dynLoading) ? '#fff' : 'var(--text-3)', border: '1px solid var(--border)', letterSpacing: '0.5px' }}
+                  >{dynLoading ? '⏳ กำลังคำนวณ...' : dynRoutes.length > 0 ? `🔍 Find Safe Routes (${dynRoutes.length} found)` : '🔍 Find Safe Routes'}</button>
+
+                  {dynError && (
+                    <div style={{ marginTop: 6, padding: '5px 8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 4, fontSize: 9, color: 'var(--danger)' }}>
+                      ⚠ {dynError} — ใช้ Precomputed Routes แทน
+                    </div>
+                  )}
+
+                  {/* Reset */}
+                  {(dynStart || dynEnd || dynBlocked.length > 0 || dynRoutes.length > 0) && (
+                    <button onClick={() => { setDynStart(null); setDynEnd(null); setDynBlocked([]); setDynRoutes([]); setDynError(null); setDynDataStatus(null); setMapClickMode(null); setDynRoutingSource(null); setDynFallbackFrom(null); setDynFallbackReason(null); setDynLimitations(null); setDynAllAffected(false); setDynRequestedCount(3); }} style={{ marginTop: 4, width: '100%', padding: '3px 0', fontSize: 9, borderRadius: 4, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', color: 'var(--text-3)' }}>
+                      ล้างทั้งหมด
+                    </button>
+                  )}
+
+                  {/* dataStatus badges */}
+                  {dynDataStatus && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginTop: 8 }}>
+                      {Object.entries(dynDataStatus).map(([key, status]) => {
+                        const colors = { live: '#22c55e', cached: '#3b82f6', fallback: '#f59e0b', local: '#8b5cf6', offline: '#ef4444' };
+                        const color = colors[status] ?? '#64748b';
+                        return (
+                          <span key={key} style={{ fontSize: 8, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: `${color}22`, color, border: `1px solid ${color}55`, fontFamily: 'var(--font-mono)' }}>
+                            {key}: {status.toUpperCase()}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Dynamic route cards */}
+                  {dynRoutes.length > 0 && dynRoutes.length < dynRequestedCount && (
+                    <div style={{ marginTop: 6, padding: '4px 8px', background: 'rgba(100,116,139,0.08)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 9, color: 'var(--text-3)' }}>
+                      พบ {dynRoutes.length} จาก {dynRequestedCount} เส้นทางที่ขอ — local graph จำกัด MAX_ROUTE_COUNT={dynRoutes.length} (ใช้ npm run start:local:3 เพื่อเปิด 3 เส้นทาง)
+                    </div>
+                  )}
+                  {dynAllAffected && dynRoutes.length > 0 && (
+                    <div style={{ marginTop: 8, padding: '5px 8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.35)', borderRadius: 4, fontSize: 9, color: 'var(--danger)', fontWeight: 700 }}>
+                      ⚠ All alternatives are affected by blocked points — no clear route available
+                    </div>
+                  )}
+
+                  {dynRoutes.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                      {dynRoutes.map(route => {
+                        const baseColor = route.risk >= 70 ? 'var(--danger)' : route.risk >= 40 ? 'var(--warn)' : 'var(--safe)';
+                        // Blocked routes are never shown as green — minimum amber
+                        const riskColor = route.blocked && route.risk < 40 ? 'var(--warn)' : baseColor;
+                        const isActive  = dynActiveRoute === route.id;
+                        const ft        = route.features ?? {};
+                        const riskFactors = [
+                          { label: 'พื้นที่น้ำท่วม', val: ft.f_flood_exposure ?? 0 },
+                          { label: 'ฝนคาดการณ์',     val: ft.f_forecast_rain  ?? 0 },
+                          { label: 'ประวัติน้ำท่วม', val: ft.f_historical     ?? 0 },
+                          { label: 'ความเสี่ยงดิน',  val: ft.f_soil           ?? 0 },
+                        ];
+                        return (
+                          <div key={route.id} onClick={() => setDynActiveRoute(route.id)}
+                            style={{ background: isActive ? 'var(--bg-panel-alt)' : 'var(--bg-input)', border: `1px solid ${isActive ? 'var(--blue-primary)' : 'var(--border)'}`, borderRadius: 'var(--radius)', padding: '10px 12px', cursor: 'pointer' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                              <div>
+                                <span style={{ fontWeight: 700, fontSize: 12, color: 'var(--text-1)' }}>{route.name}</span>
+                                {route.blocked && (
+                                  <span style={{ marginLeft: 6, fontSize: 9, color: 'var(--warn)', fontWeight: 700 }}>
+                                    ⛔ penalized +{route.blockedPenalty ?? 25} risk (ผ่านจุดปิดถนน)
+                                  </span>
+                                )}
+                              </div>
+                              <span style={{ fontSize: 16, fontWeight: 900, color: riskColor }}>{route.risk}%</span>
+                            </div>
+                            <div style={{ height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden', marginBottom: 6 }}>
+                              <div style={{ height: '100%', width: `${route.risk}%`, background: riskColor }} />
+                            </div>
+                            <div style={{ display: 'flex', gap: 10, fontSize: 10, color: 'var(--text-2)', marginBottom: 6 }}>
+                              <span style={{ color: riskColor, fontWeight: 700 }}>Safety {route.safety}%</span>
+                              <span>·</span>
+                              <span style={{ color: (ft.f_flood_exposure ?? 0) >= 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>Flood {Math.round((ft.f_flood_exposure ?? 0) * 100)}%</span>
+                              <span>·</span>
+                              <span>{route.distanceKm} กม.</span>
+                              <span>·</span>
+                              <span>{Math.round(route.durationMin)} น.</span>
+                            </div>
+                            {isActive && (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                {riskFactors.map(({ label, val }) => {
+                                  const pct = Math.round(val * 100);
+                                  const fc  = pct >= 70 ? 'var(--danger)' : pct >= 40 ? 'var(--warn)' : 'var(--safe)';
+                                  return (
+                                    <div key={label} className="rf-row">
+                                      <span className="rf-label">{label}</span>
+                                      <div className="rf-track"><div className="rf-fill" style={{ width: `${pct}%`, background: fc }} /></div>
+                                      <span className="rf-pct">{pct}%</span>
+                                    </div>
+                                  );
+                                })}
+                                {route.blocked && route.blockedDistanceM != null && (
+                                  <div style={{ marginTop: 4, fontSize: 9, color: 'var(--warn)', fontFamily: 'var(--font-mono)' }}>
+                                    nearest blocked point: {route.blockedDistanceM.toLocaleString()} m
+                                  </div>
+                                )}
+                                <button
+                                  onClick={e => { e.stopPropagation(); fetchRouteXAI(route, dynRoutingSource ?? 'osrm'); }}
+                                  style={{ marginTop: 8, width: '100%', padding: '4px 0', fontSize: 10, fontWeight: 700, borderRadius: 4, cursor: 'pointer', background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)' }}
+                                >🔍 XAI — อธิบายเหตุผลความเสี่ยง</button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* Limitations note */}
+                  {dynLimitations && (
+                    <div style={{ marginTop: 8, padding: '4px 8px', background: 'rgba(100,116,139,0.08)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 8, color: 'var(--text-3)', lineHeight: 1.4 }}>
+                      ⚠ {dynLimitations}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Placeholder — dynamic mode, no routes yet, no fallback */}
+              {routeMode === 'dynamic' && dynRoutes.length === 0 && !isPrecomputedFallback && (
+                <div style={{ padding: '20px 12px', textAlign: 'center', color: 'var(--text-3)', fontSize: 11, lineHeight: 1.7 }}>
+                  <div style={{ fontSize: 22, marginBottom: 8 }}>🗺️</div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>ยังไม่มีเส้นทาง</div>
+                  <div>เลือกจุดเริ่มต้นและปลายทาง<br />แล้วกด <strong>Find Safe Routes</strong></div>
+                </div>
+              )}
+
+              {/* Route cards — fixed mode OR precomputed fallback after dynamic failure */}
+              {(routeMode === 'fixed' || isPrecomputedFallback) && (
+              <div className="panel-section">
+                {isPrecomputedFallback && routeMode === 'dynamic' && (
+                  <div style={{ marginBottom: 8, padding: '5px 8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, fontSize: 9, color: 'var(--warn)', lineHeight: 1.5 }}>
+                    ⚠ เส้นทางด้านล่างเป็นข้อมูล Precomputed ของจ.เชียงรายเท่านั้น — ไม่ใช่เส้นทางจาก Start/End ที่เลือก
+                  </div>
+                )}
+                <div className="section-header">
+                  <span className="section-title">{isPrecomputedFallback ? 'Precomputed Fallback' : 'Routes'}</span>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    {isPrecomputedFallback && (
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)55' }}>
+                        ⚠ PRECOMPUTED FALLBACK
+                      </span>
+                    )}
+                    {routeSource === 'client-estimate' && (
+                      <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(245,158,11,0.15)', color: 'var(--warn)', border: '1px solid var(--warn)' }}>
+                        ⚠ CLIENT ESTIMATE
+                      </span>
+                    )}
+                    <button
+                      onClick={fetchRouteExplanation}
+                      style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--blue-primary)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
+                    >🔍 XAI</button>
+                  </div>
+                </div>
+                {routeDataStatus && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+                    {Object.entries(routeDataStatus).map(([key, status]) => {
+                      const colors = { live: '#22c55e', cached: '#3b82f6', fallback: '#f59e0b', local: '#8b5cf6', offline: '#ef4444' };
+                      const color = colors[status] ?? '#64748b';
+                      const labels = { gistdaFlood: 'Flood', tmdForecast: 'TMD', floodFreq: 'Freq', lddSoil: 'Soil', rain72h: 'Rain72h', thaiWater: 'Water', traffic: 'CCTV' };
+                      return (
+                        <span key={key} style={{ fontSize: 8, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: `${color}22`, color, border: `1px solid ${color}55`, fontFamily: 'var(--font-mono)', letterSpacing: '0.3px' }}>
+                          {labels[key] ?? key}: {status.toUpperCase()}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                {allRoutesData.map(route => {
+                  const riskPct  = route.risk ?? 0;
+                  const riskColor = riskPct >= 70 ? 'var(--danger)' : riskPct >= 40 ? 'var(--warn)' : 'var(--safe)';
+                  const statusLbl = riskPct >= 70 ? 'เสี่ยงสูง' : riskPct >= 40 ? 'เสี่ยงปานกลาง' : 'ปลอดภัย';
+                  const statusCls = riskPct >= 70 ? 'danger' : riskPct >= 40 ? 'warn' : 'safe';
+                  const safety    = 100 - riskPct;
+                  const ft        = route.features ?? {};
+                  const floodExp  = Math.round((ft.f_flood_exposure ?? 0) * 100);
+                  const affRoads  = Math.round((ft.f_historical  ?? 0) * 100);
+                  const vd        = vehicleData[route.id];
+                  const isActive  = activeRoute === route.id;
+                  const riskFactors = [
+                    { label: 'พื้นที่น้ำท่วม', val: ft.f_flood_exposure ?? 0 },
+                    { label: 'ฝนคาดการณ์',     val: ft.f_forecast_rain  ?? 0 },
+                    { label: 'ประวัติน้ำท่วม', val: ft.f_historical      ?? 0 },
+                    { label: 'ความเสี่ยงดิน',  val: ft.f_soil            ?? 0 },
+                  ];
+                  return (
+                    <div
+                      key={route.id}
+                      className={`route-card-v2 ${isActive ? 'active' : ''}`}
+                      onClick={() => { setActiveRoute(route.id); addLog(route.name); }}
+                    >
+                      <div className="rc-top">
+                        <div className="rc-letter" style={{ background: riskPct >= 70 ? '#ef4444' : riskPct >= 40 ? '#f59e0b' : '#22c55e' }}>{route.id}</div>
+                        <div className="rc-info">
+                          <div className="rc-name">{route.name}</div>
+                          <div className="rc-dest">{route.desc ?? ''}</div>
+                        </div>
+                        <div className="rc-risk" style={{ color: riskColor }}>{riskPct}%</div>
+                      </div>
+                      <div className="rc-bar-track">
+                        <div className="rc-bar-fill" style={{ width: `${riskPct}%`, background: riskColor }} />
+                      </div>
+                      <div className="rc-meta">
+                        <span className={`rc-status-tag ${statusCls}`}>{statusLbl}</span>
+                        <span><strong>{route.duration ?? '--'}</strong> น.</span>
+                        <span><strong>{route.distance ?? '--'}</strong> กม.</span>
+                        {vd && <span>🚗 <strong>{vd.vehicle_count ?? 0}</strong></span>}
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, marginTop: 4, fontSize: 10 }}>
+                        <span style={{ color: riskColor, fontWeight: 700 }}>Safety {safety}%</span>
+                        <span style={{ color: 'var(--text-3)' }}>·</span>
+                        <span style={{ color: floodExp >= 50 ? 'var(--danger)' : 'var(--text-2)' }}>Flood {floodExp}%</span>
+                        {routeSource === 'client-estimate' && (
+                          <span style={{ marginLeft: 'auto', fontSize: 8, color: 'var(--warn)', fontWeight: 700 }}>EST.</span>
+                        )}
+                      </div>
+
+                      {isActive && (
+                        <>
+                          {/* Route metrics */}
+                          <div className="rc-metrics">
+                            <div className="rc-metric">
+                              <div className="rc-metric-val" style={{ color: riskColor }}>{safety}</div>
+                              <div className="rc-metric-lbl">Safety Score</div>
+                            </div>
+                            <div className="rc-metric">
+                              <div className="rc-metric-val">{floodExp}%</div>
+                              <div className="rc-metric-lbl">Flood Exposure</div>
+                            </div>
+                            <div className="rc-metric">
+                              <div className="rc-metric-val">{affRoads}%</div>
+                              <div className="rc-metric-lbl">Affected Roads</div>
+                            </div>
+                          </div>
+
+                          {/* Risk factors bar chart */}
+                          <div className="rc-risk-factors" onClick={e => e.stopPropagation()}>
+                            <div className="rf-title">Risk Factors</div>
+                            {riskFactors.map(({ label, val }) => {
+                              const pct = Math.round(val * 100);
+                              const fc  = pct >= 70 ? 'var(--danger)' : pct >= 40 ? 'var(--warn)' : 'var(--safe)';
+                              return (
+                                <div key={label} className="rf-row">
+                                  <span className="rf-label">{label}</span>
+                                  <div className="rf-track">
+                                    <div className="rf-fill" style={{ width: `${pct}%`, background: fc }} />
+                                  </div>
+                                  <span className="rf-pct">{pct}%</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Actions */}
+                          <div className="rc-actions" onClick={e => e.stopPropagation()}>
+                            <button className="rc-btn xai" onClick={() => fetchRouteXAI(route, 'precomputed')}>🔍 XAI</button>
+                            <button
+                              className="rc-btn override"
+                              onClick={() => {
+                                const reason = window.prompt('เหตุผล Override:');
+                                if (!reason) return;
+                                const officer = window.prompt('ชื่อเจ้าหน้าที่:') || 'ผบ.เหตุการณ์';
+                                addLog(`Override: ${route.id}`, true, reason, officer);
+                                addToast(`บันทึก Override เส้นทาง ${route.id}`, 'success');
+                              }}
+                            >✋ Override</button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              )}
+
+              {/* Layer toggles */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Map Layers</span>
+                </div>
+                <div className="toggle-grid-v2">
+                  {Object.entries(toggles).map(([k, v]) => (
+                    <div key={k}>
+                      <div className="toggle-item-v2">
+                        <span>{TOGGLE_LABELS[k] || k}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          {k === 'flood' && (
+                            <div style={{ position: 'relative' }}>
+                              <button
+                                onClick={() => setFloodRangeOpen(o => !o)}
+                                style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-2)', color: 'var(--text-2)', cursor: 'pointer', lineHeight: 1.6 }}
+                              >
+                                {floodRange} ▾
+                              </button>
+                              {floodRangeOpen && (
+                                <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6, zIndex: 999, minWidth: 90, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                                  {['1day', '3days', '7days', '30days'].map(r => (
+                                    <div
+                                      key={r}
+                                      onClick={() => { setFloodRange(r); setFloodRangeOpen(false); }}
+                                      style={{ padding: '6px 12px', fontSize: 11, cursor: 'pointer', color: r === floodRange ? 'var(--accent)' : 'var(--text-1)', fontWeight: r === floodRange ? 700 : 400, whiteSpace: 'nowrap' }}
+                                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-2)'}
+                                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                    >
+                                      {r === '1day' ? '1 วัน' : r === '3days' ? '3 วัน' : r === '7days' ? '7 วัน' : '30 วัน'}
+                                      {r === floodRange && ' ✓'}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {k === 'histFreq' && (
+                            <div style={{ position: 'relative' }}>
+                              <button
+                                onClick={() => setHistFreqRangeOpen(o => !o)}
+                                style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-2)', color: 'var(--text-2)', cursor: 'pointer', lineHeight: 1.6 }}
+                              >
+                                {histFreqRange} ▾
+                              </button>
+                              {histFreqRangeOpen && (
+                                <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6, zIndex: 999, minWidth: 100, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
+                                  {['freq', '1day', '3days', '7days', '30days'].map(r => (
+                                    <div
+                                      key={r}
+                                      onClick={() => { setHistFreqRange(r); setHistFreqRangeOpen(false); }}
+                                      style={{ padding: '6px 12px', fontSize: 11, cursor: 'pointer', color: r === histFreqRange ? 'var(--accent)' : 'var(--text-1)', fontWeight: r === histFreqRange ? 700 : 400, whiteSpace: 'nowrap' }}
+                                      onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-2)'}
+                                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                                    >
+                                      {r === 'freq' ? 'ซ้ำซาก' : r === '1day' ? '1 วัน' : r === '3days' ? '3 วัน' : r === '7days' ? '7 วัน' : '30 วัน'}
+                                      {r === histFreqRange && ' ✓'}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <div className={`toggle-sw ${v ? 'on' : ''}`} onClick={() => setToggles(p => ({ ...p, [k]: !p[k] }))} />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Decision log */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Decision Log</span>
+                  <button
+                    style={{ background: 'var(--danger-dim)', border: '1px solid var(--danger)', color: 'var(--danger)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
+                    onClick={() => {
+                      const reason = window.prompt('เหตุผลการตัดสินใจ Override:');
+                      if (!reason) return;
+                      const officer = window.prompt('ชื่อเจ้าหน้าที่:') || 'ผบ.เหตุการณ์';
+                      addLog(`Override: ${activeRoute}`, true, reason, officer);
+                      addToast(`บันทึก Override เส้นทาง ${activeRoute}`, 'success');
+                    }}
+                  >✋</button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+                  {decisionLogs.length === 0 ? (
+                    <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '4px 0' }}>ยังไม่มีบันทึก</div>
+                  ) : decisionLogs.map((log, idx) => (
+                    <div key={idx} className={`log-item${log.warn ? ' warn-log' : ''}`}>
+                      <div className="log-item-top">
+                        <span className={`log-route${log.warn ? ' warn' : ''}`}>{log.route}</span>
+                        <span className="log-time">{log.time}</span>
+                      </div>
+                      <div className="log-reason">{log.reason}</div>
+                      <div className="log-officer">ผู้บันทึก: {log.officer}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+            </div>
+          </aside>
+
+          {/* CENTER: Map */}
+          <div className="map-center">
+            <div className="map-badge-v2">
+              <span className="status-dot live" />
+              GISTDA Sphere · {new Date().toLocaleDateString('th-TH')}
+            </div>
+
             <SphereMap
               activeRoute={activeRoute}
               routePaths={routePaths}
@@ -834,375 +1608,280 @@ export default function App() {
               vehicleData={vehicleData}
               gistdaRiskPoints={gistdaRiskPoints}
               shelters={shelters}
+              floodRange={floodRange}
+              histFreqRange={histFreqRange}
+              clickMode={mapClickMode}
+              onMapClick={handleMapClick}
+              dynStart={dynStart}
+              dynEnd={dynEnd}
+              dynBlocked={dynBlocked}
+              dynRoutes={dynRoutes}
+              dynActiveRoute={dynActiveRoute}
+              routeMode={routeMode}
+              isPrecomputedFallback={isPrecomputedFallback}
             />
-          </div>
 
-          {/* Active route float card */}
-          <div className="route-float">
-            <div className="route-float-title">เส้นทางที่เลือก</div>
-            <div className="route-float-name">{activeData.name}</div>
-            <div className="route-float-score">
-              <span className="risk-badge" style={{ color: activeData.color }}>
-                {activeData.risk ?? '--'}%
-              </span>
-              <div className="route-stats">
-                <div className="route-stat-row">
-                  <span>เวลา</span><strong>{activeData.duration ?? '--'} น.</strong>
-                </div>
-                <div className="route-stat-row">
-                  <span>ระยะ</span><strong>{activeData.distance ?? '--'} กม.</strong>
-                </div>
-                <div className="route-stat-row">
-                  <span>น้ำลึก</span>
-                  <strong style={{ color: activeData.depth > 0.8 ? 'var(--danger)' : 'var(--text-1)' }}>
-                    {activeData.depth ?? '--'} ม.
-                  </strong>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* ── Sidebar ── */}
-        <aside className="sidebar">
-          <div className="sidebar-scroll">
-
-            {/* Resources */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ทรัพยากรภาคสนาม</span>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
-                {[
-                  { label: 'เรือกู้ภัย',    value: resources.boats,   color: 'var(--safe)'         },
-                  { label: 'ทีมกู้ชีพ',     value: resources.teams,   color: 'var(--blue-primary)' },
-                  { label: 'รอช่วยเหลือ',   value: `${resources.waiting} คน`, color: 'var(--danger)' },
-                ].map(item => (
-                  <div key={item.label} style={{ background: 'var(--bg-panel)', borderRadius: 'var(--radius)', padding: '10px 8px', textAlign: 'center', border: '1px solid var(--border)' }}>
-                    <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 4 }}>{item.label}</div>
-                    <strong style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: item.color }}>{item.value}</strong>
-                  </div>
-                ))}
-              </div>
+            {/* Map legend */}
+            <div className="map-legend">
+              <div className="legend-title">ระดับความเสี่ยง</div>
+              <div className="legend-row"><span className="legend-dot" style={{ background: '#22c55e' }} />ต่ำ (&lt;40%)</div>
+              <div className="legend-row"><span className="legend-dot" style={{ background: '#f59e0b' }} />ปานกลาง (40–70%)</div>
+              <div className="legend-row"><span className="legend-dot" style={{ background: '#ef4444' }} />สูง (&gt;70%)</div>
             </div>
 
-            {/* Routes */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">เส้นทางแนะนำ</span>
-                <span className="sb-section-badge">OSRM</span>
-              </div>
-              {allRoutesData.map((route, i) => {
-                const tagClass = route.id === 'A' ? 'tag-safe' : route.id === 'B' ? 'tag-warn' : 'tag-danger';
+            {(() => {
+              if (routeMode === 'dynamic' && !isPrecomputedFallback) {
+                const dr = dynRoutes.find(r => r.id === dynActiveRoute);
+                if (!dr) return null;
+                const rc = dr.risk >= 70 ? 'var(--danger)' : dr.risk >= 40 ? 'var(--warn)' : 'var(--safe)';
                 return (
-                  <div
-                    key={route.id}
-                    className={`route-card ${activeRoute === route.id ? 'active' : ''}`}
-                    onClick={() => { setActiveRoute(route.id); addLog(route.name); }}
-                  >
-                    <div className="route-card-top">
-                      <div className="route-card-name">
-                        <span className="route-dot" style={{ background: route.color }} />
-                        {route.name}
+                  <div className="map-active-route">
+                    <div>
+                      <div className="mar-label">
+                        Dynamic Route — {dynRoutingSource === 'local-graph' ? 'Local Graph' : 'OSRM/API'}
                       </div>
-                      <span className={`route-status-tag ${tagClass}`}>{route.status}</span>
+                      <div className="mar-name">{dr.name} — จากจุดเริ่มต้นที่เลือก</div>
                     </div>
-                    <div className="route-card-metrics">
-                      <span>#{i+1}</span>
-                      <span>{route.duration ?? '--'} น.</span>
-                      <span>{route.distance ?? '--'} กม.</span>
-                      <span>{route.depth ?? '--'} ม.</span>
+                    <div className="mar-risk" style={{ color: rc }}>{dr.risk}%</div>
+                    <div className="mar-stats">
+                      <span>{Math.round(dr.durationMin)} น.</span>
+                      <span>{dr.distanceKm} กม.</span>
+                      <span style={{ color: (dr.features?.f_flood_exposure ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
+                        ท่วม {Math.round((dr.features?.f_flood_exposure ?? 0) * 100)}%
+                      </span>
+                      <button
+                        onClick={() => fetchRouteXAI(dr, dynRoutingSource ?? 'osrm')}
+                        style={{ marginLeft: 4, padding: '1px 7px', fontSize: 9, fontWeight: 700, borderRadius: 3, cursor: 'pointer', background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)' }}
+                      >🔍 XAI</button>
                     </div>
                   </div>
                 );
-              })}
-            </div>
+              }
+              return (
+                <div className="map-active-route">
+                  <div>
+                    <div className="mar-label">{isPrecomputedFallback ? '⚠ Precomputed Fallback' : 'เส้นทางที่เลือก'}</div>
+                    <div className="mar-name">{activeData.name}</div>
+                  </div>
+                  <div className="mar-risk" style={{ color: activeData.color }}>{activeData.risk ?? '--'}%</div>
+                  <div className="mar-stats">
+                    <span>{activeData.duration ?? '--'} น.</span>
+                    <span>{activeData.distance ?? '--'} กม.</span>
+                    <span style={{ color: (activeData?.features?.f_flood_exposure ?? 0) > 0.5 ? 'var(--danger)' : 'var(--text-2)' }}>
+                      ท่วม {Math.round((activeData?.features?.f_flood_exposure ?? 0) * 100)}%
+                    </span>
+                    {activeData.risk != null && (
+                      <button
+                        onClick={() => fetchRouteXAI({ id: activeRoute, name: activeData.name, risk: activeData.risk, safety: 100 - activeData.risk, distanceKm: activeData.distance, durationMin: activeData.duration, features: activeData.features }, isPrecomputedFallback ? 'precomputed' : 'precomputed')}
+                        style={{ marginLeft: 4, padding: '1px 7px', fontSize: 9, fontWeight: 700, borderRadius: 3, cursor: 'pointer', background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)' }}
+                      >🔍 XAI</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
 
-            {/* Weather table */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">สภาพอากาศ</span>
-                <span className="sb-section-badge">TMD Live</span>
+          {/* RIGHT: Data + AI chat */}
+          <aside className="right-panel">
+            <div className="right-panel-scroll">
+
+              {/* Resources */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Resources</span>
+                  <button
+                    style={{ background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)', borderRadius: 'var(--radius-sm)', padding: '2px 8px', fontSize: 10, cursor: 'pointer' }}
+                    onClick={runResourceOptimizer}
+                    disabled={optimizerRunning}
+                  >{optimizerRunning ? `⚙ ${optimizerProgress}%` : '⚙ Optimize (Demo)'}</button>
+                </div>
+                <div className="resources-grid">
+                  {[
+                    { label: 'เรือกู้ภัย',   value: resources.boats,   color: 'var(--safe)' },
+                    { label: 'ทีมกู้ชีพ',    value: resources.teams,   color: 'var(--blue-primary)' },
+                    { label: 'รอช่วยเหลือ',  value: resources.waiting, color: 'var(--danger)' },
+                  ].map(item => (
+                    <div key={item.label} className="resource-item">
+                      <label>{item.label}</label>
+                      <strong style={{ color: item.color }}>{item.value}</strong>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <table className="weather-table">
-                <thead>
-                  <tr>
-                    <th>สถานี</th><th>°C</th><th>ฝน (mm)</th><th>ลม</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {WEATHER_STATIONS.map(st => {
-                    const d = stationData[st.id];
-                    const rainNum = d?.rr != null && !isNaN(d.rr) ? Number(d.rr) : null;
-                    const fillPct = rainNum != null ? Math.min(rainNum / 20 * 100, 100) : 0;
-                    return (
-                      <tr key={st.id}>
-                        <td>{st.name}</td>
-                        <td>{d?.tc?.toFixed(1) ?? '—'}</td>
-                        <td>
-                          <div className="rain-indicator">
-                            <div className="rain-bar">
-                              <div className="rain-fill" style={{ width: `${fillPct}%` }} />
-                            </div>
-                            {rainNum != null ? rainNum.toFixed(1) : '—'}
+
+              {/* River levels */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">River Levels</span>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <span className="section-badge">กรมทรัพยากรน้ำ</span>
+                    {waterLevels && waterLevels.length > 4 && (
+                      <button
+                        onClick={() => setShowAllRiverLevels(v => !v)}
+                        style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, cursor: 'pointer', background: 'none', border: '1px solid var(--border)', color: 'var(--blue-primary)' }}
+                      >
+                        {showAllRiverLevels ? 'ย่อ' : `ดูทั้งหมด (${waterLevels.length})`}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {waterLevels
+                  ? (showAllRiverLevels ? waterLevels : waterLevels.slice(0, 4)).map(st => {
+                      const hasData = st.level != null;
+                      const margin = (hasData && st.warning_level) ? st.warning_level - st.level : null;
+                      const dangerPct = margin != null ? Math.max(0, Math.min(100, (1 - margin / 5.0) * 100)) : null;
+                      const cls = !hasData ? 'nodata' : dangerPct == null ? 'safe' : dangerPct >= 100 ? 'danger' : dangerPct >= 60 ? 'warn' : 'safe';
+                      const pct = dangerPct ?? 0;
+                      return (
+                        <div key={st.id} className="water-station">
+                          <div className="water-station-header">
+                            <span className="water-station-name">{st.name}</span>
+                            <span className={`water-station-val ${cls}`}>
+                              {hasData ? `${st.level.toFixed(2)} ม.รทก` : '—'}
+                            </span>
                           </div>
-                        </td>
-                        <td>{d?.ws?.toFixed(1) ?? '—'}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            {/* River water levels */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ระดับน้ำแม่น้ำ</span>
-                <span className="sb-section-badge">กรมทรัพยากรน้ำ</span>
-              </div>
-              {waterLevels
-                ? waterLevels.map(st => {
-                    const hasData = st.level != null;
-                    const pctOfWarn = (hasData && st.warning_level) ? st.level / st.warning_level : null;
-                    const valClass = !hasData ? 'nodata' : pctOfWarn == null ? 'safe' : pctOfWarn >= 1 ? 'danger' : pctOfWarn >= 0.8 ? 'warn' : 'safe';
-                    return (
-                      <div key={st.id} className="water-row">
-                        <div className="water-row-name">
-                          <div style={{ fontWeight: 600, color: 'var(--text-1)' }}>{st.id}</div>
-                          <div>{st.name}</div>
+                          <div className="water-bar-track">
+                            <div className={`water-bar-fill ${cls}`} style={{ width: `${pct}%` }} />
+                          </div>
+                          <div className="water-station-sub">
+                            {margin != null ? `ห่างจากเฝ้าระวัง ${margin.toFixed(2)} ม.` : 'ไม่มีข้อมูล'}
+                          </div>
                         </div>
-                        <span className={`water-level-val ${valClass}`}>
-                          {hasData ? `${st.level.toFixed(2)} ม.` : '—'}
-                        </span>
-                      </div>
-                    );
-                  })
-                : <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '6px 0' }}>กำลังดึงข้อมูล...</div>
-              }
-            </div>
-
-            {/* Dam levels */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ระดับน้ำเขื่อน</span>
-                <span className="sb-section-badge">กรมชลประทาน</span>
+                      );
+                    })
+                  : <div style={{ fontSize: 11, color: 'var(--text-3)' }}>กำลังดึงข้อมูล...</div>
+                }
               </div>
-              {damLevels
-                ? damLevels.map(dam => {
-                    const pct = dam.percent;
-                    const fillClass = pct == null ? '' : pct >= 100 ? 'danger' : pct >= 80 ? 'warn' : 'safe';
-                    const pctColor = pct == null ? 'var(--text-3)' : pct >= 100 ? 'var(--danger)' : pct >= 80 ? 'var(--warn)' : 'var(--safe)';
-                    return (
-                      <div key={dam.code} className="dam-row">
-                        <div className="dam-row-header">
-                          <span className="dam-name">{dam.name}</span>
-                          <span className="dam-pct" style={{ color: pctColor }}>
-                            {pct != null ? `${pct}%` : '—'}
-                          </span>
-                        </div>
-                        <div className="dam-track">
-                          <div className={`dam-fill ${fillClass}`} style={{ width: `${Math.min(pct ?? 0, 100)}%` }} />
-                        </div>
-                        <div className="dam-meta">
-                          <span>ความจุ {dam.capacity_mcm} ล้านลบ.ม.</span>
-                          {dam.inflow != null && <span>ไหลเข้า {dam.inflow} ม³/วิ</span>}
-                        </div>
-                      </div>
-                    );
-                  })
-                : <div style={{ fontSize: 10, color: 'var(--text-3)', padding: '6px 0' }}>กำลังดึงข้อมูล...</div>
-              }
-            </div>
 
-            {/* Traffic / CCTV */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ปริมาณจราจร CCTV</span>
-              </div>
-              {allRoutesData.map(route => {
-                const vd = vehicleData[route.id];
-                const pct = Math.min((vd?.vehicle_count ?? 0) / 30 * 100, 100);
-                const barColor = route.id === 'A' ? 'var(--safe)' : route.id === 'B' ? 'var(--warn)' : 'var(--danger)';
-                const cTag = vd?.congestion_level === 'blocked' ? 'tag-danger' : vd?.congestion_level === 'warning' ? 'tag-warn' : 'tag-safe';
-                const cLabel = vd?.congestion_level === 'blocked' ? 'ติดขัด' : vd?.congestion_level === 'warning' ? 'หนาแน่น' : 'ปกติ';
-                return (
-                  <div key={route.id} className="traffic-row">
-                    <span className="traffic-route-label">{route.id}</span>
-                    <div className="traffic-bar-track">
-                      <div className="traffic-bar-fill" style={{ width: `${pct}%`, background: barColor }} />
-                    </div>
-                    <span className="traffic-count">{vd?.vehicle_count ?? 0}</span>
-                    <span className={`congestion-tag ${cTag}`}>{cLabel}</span>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Route comparison bars */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">เปรียบเทียบเส้นทาง</span>
-              </div>
-              {[
-                { label: 'เวลาเดินทาง (นาที)', vals: allRoutesData.map(r => r.duration ?? 0), max: 60 },
-                { label: 'ความเสี่ยง (%)',     vals: allRoutesData.map(r => r.risk     ?? 0), max: 100 },
-              ].map(({ label, vals, max }) => (
-                <div key={label} className="comp-row">
-                  <div className="comp-label">
-                    <span>{label}</span>
-                    <span>{vals.map(v => v).join(' · ')}</span>
-                  </div>
-                  <div className="comp-track">
-                    {allRoutesData.map((r, i) => (
-                      <div key={r.id} className="comp-bar" style={{ width: `${(vals[i] / max) * 100}%`, background: r.color }} />
-                    ))}
-                  </div>
+              {/* Dam levels — HAII/ThaiWater monitoring, not part of risk formula */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">Dams</span>
+                  <span className="section-badge">HAII / ThaiWater</span>
                 </div>
-              ))}
-            </div>
-
-            {/* Resource optimizer */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">จัดสรรทรัพยากรกู้ภัย</span>
-                {optimizerRunning && <span className="sb-section-badge">{optimizerProgress}%</span>}
+                <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 6, fontStyle: 'italic' }}>
+                  Monitoring only — ไม่ส่งผลต่อ risk score
+                </div>
+                {damLevels
+                  ? damLevels.map(dam => {
+                      const pct = dam.percent;
+                      const cls = pct == null ? '' : pct >= 100 ? 'danger' : pct >= 80 ? 'warn' : 'safe';
+                      const pctColor = pct == null ? 'var(--text-3)' : pct >= 100 ? 'var(--danger)' : pct >= 80 ? 'var(--warn)' : 'var(--safe)';
+                      const statusColors = { online: 'var(--safe)', offline: 'var(--text-3)', nodata: 'var(--warn)', error: 'var(--danger)' };
+                      return (
+                        <div key={dam.id ?? dam.code} className="dam-card-v2">
+                          <div className="dam-card-header">
+                            <span className="dam-card-name">{dam.name}</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              {dam.status && (
+                                <span style={{ fontSize: 8, fontFamily: 'var(--font-mono)', color: statusColors[dam.status] ?? 'var(--text-3)' }}>
+                                  {dam.status}
+                                </span>
+                              )}
+                              <span className="dam-card-pct" style={{ color: pctColor }}>{pct != null ? `${pct}%` : '—'}</span>
+                            </div>
+                          </div>
+                          <div className="dam-bar-track">
+                            <div className={`dam-bar-fill ${cls}`} style={{ width: `${Math.min(pct ?? 0, 100)}%` }} />
+                          </div>
+                          <div className="dam-card-meta">
+                            {dam.capacity_mcm} ล้านลบ.ม.{dam.inflow != null && ` · ไหลเข้า ${dam.inflow} ม³/วิ`}
+                          </div>
+                        </div>
+                      );
+                    })
+                  : <div style={{ fontSize: 11, color: 'var(--text-3)' }}>กำลังดึงข้อมูล...</div>
+                }
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6, marginBottom: 10 }}>
-                {allRoutesData.map((route, idx) => {
-                  const isActive = optimizerRunning && (
-                    (idx === 0 && optimizerProgress > 20 && optimizerProgress < 60) ||
-                    (idx === 1 && optimizerProgress > 40 && optimizerProgress < 80) ||
-                    (idx === 2 && optimizerProgress > 60)
-                  );
-                  const tagClass = route.id === 'A' ? 'tag-safe' : route.id === 'B' ? 'tag-warn' : 'tag-danger';
-                  const lbl = optimizerRunning
-                    ? ['จำลอง','วิเคราะห์','ประมวลผล'][idx]
-                    : route.id === 'C' ? 'เฝ้าระวัง' : 'ปกติ';
+
+              {/* CCTV Traffic */}
+              <div className="panel-section">
+                <div className="section-header">
+                  <span className="section-title">จราจร CCTV</span>
+                  {Object.values(vehicleData).every(v => v.congestion_level === 'unknown' || v.vehicle_count === 0)
+                    ? <span className="route-status-tag tag-warn" style={{ fontSize: 9 }}>offline</span>
+                    : <span className="route-status-tag tag-safe" style={{ fontSize: 9 }}>● live</span>}
+                </div>
+                <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 6, lineHeight: 1.4 }}>
+                  Source: YOLOv8 + Supabase · window 15 min
+                </div>
+                {Object.values(vehicleData).every(v => v.congestion_level === 'unknown' || v.vehicle_count === 0) ? (
+                  <div style={{ fontSize: 10, color: 'var(--text-3)', textAlign: 'center', padding: '10px 0' }}>
+                    ไม่มีข้อมูลยานพาหนะ — CCTV offline
+                  </div>
+                ) : allRoutesData.map(route => {
+                  const vd = vehicleData[route.id];
+                  const pct = Math.min((vd?.vehicle_count ?? 0) / 30 * 100, 100);
+                  const { tag: cTag, label: cLabel } = CONGESTION_CONFIG[vd?.congestion_level] ?? CONGESTION_CONFIG.normal;
                   return (
-                    <div key={route.id} style={{ background: isActive ? 'var(--blue-dim)' : 'var(--bg-panel)', border: `1px solid ${isActive ? 'var(--blue-primary)' : 'var(--border)'}`, borderRadius: 'var(--radius)', padding: '8px 6px', textAlign: 'center' }}>
-                      <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 4 }}>พื้นที่ {route.id}</div>
-                      <span className={`route-status-tag ${tagClass}`}>{lbl}</span>
+                    <div key={route.id} className="traffic-mini">
+                      <div className="traffic-mini-label" style={{ background: route.color }}>{route.id}</div>
+                      <div className="traffic-mini-bar">
+                        <div className="traffic-mini-fill" style={{ width: `${pct}%`, background: route.color }} />
+                      </div>
+                      <span className="traffic-mini-count">{vd?.vehicle_count ?? 0}</span>
+                      <span className={`route-status-tag ${cTag}`}>{cLabel}</span>
                     </div>
                   );
                 })}
               </div>
-              {optimizerRunning && (
-                <div style={{ height: 4, background: 'var(--bg-panel-alt)', borderRadius: 2, overflow: 'hidden', marginBottom: 8 }}>
-                  <div style={{ height: '100%', width: `${optimizerProgress}%`, background: 'var(--blue-primary)', transition: 'width 0.1s', borderRadius: 2 }} />
-                </div>
-              )}
-              <button
-                style={{ width: '100%', background: optimizerRunning ? 'var(--bg-panel-alt)' : 'var(--blue-dim)', border: '1px solid var(--border-strong)', color: optimizerRunning ? 'var(--text-3)' : '#60a5fa', borderRadius: 'var(--radius)', padding: '7px', fontSize: 11, fontFamily: 'var(--font-th)', fontWeight: 600, cursor: optimizerRunning ? 'not-allowed' : 'pointer', transition: 'all 0.15s' }}
-                onClick={runResourceOptimizer}
-                disabled={optimizerRunning}
-              >
-                {optimizerRunning ? 'กำลังประมวลผล...' : 'วิเคราะห์จัดสรรทรัพยากร'}
-              </button>
-            </div>
 
-            {/* Layer toggles */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">ชั้นข้อมูลแผนที่</span>
-              </div>
-              <div className="toggle-grid">
-                {Object.entries(toggles).map(([k, v]) => (
-                  <div key={k} className="toggle-item">
-                    <span>{TOGGLE_LABELS[k] || k}</span>
-                    <div
-                      className={`toggle-switch ${v ? 'on' : ''}`}
-                      onClick={() => setToggles(p => ({ ...p, [k]: !p[k] }))}
-                    />
+              {/* AI Chat */}
+              <div className="chat-panel panel-section">
+                <div className="section-header" style={{ paddingBottom: 5 }}>
+                  <span className="section-title">Typhoon AI</span>
+                  <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                    <span className="section-badge">ผู้ช่วยปฏิบัติการ</span>
+                    <span style={{ fontSize: 8, fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: briefing.typhoonStatus === 'live' ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.1)', color: briefing.typhoonStatus === 'live' ? 'var(--safe)' : 'var(--text-3)', border: `1px solid ${briefing.typhoonStatus === 'live' ? 'var(--safe)' : 'var(--border)'}` }}>
+                      {briefing.typhoonStatus === 'live' ? '● LIVE AI' : briefing.typhoonStatus === 'offline' ? '○ OFFLINE' : '○ PENDING'}
+                    </span>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Decision log */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">บันทึกการตัดสินใจ</span>
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {decisionLogs.map((log, idx) => (
-                  <div key={idx} style={{ background: 'var(--bg-panel)', border: `1px solid ${log.warn ? 'rgba(239,68,68,0.2)' : 'var(--border)'}`, borderLeft: `3px solid ${log.warn ? 'var(--danger)' : 'var(--blue-primary)'}`, padding: '8px 10px', borderRadius: 'var(--radius)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, marginBottom: 3 }}>
-                      <strong style={{ color: log.warn ? 'var(--danger)' : '#60a5fa' }}>{log.route}</strong>
-                      <span style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{log.time}</span>
+                </div>
+                <div className="chat-messages-v2">
+                  {chatMessages.map((msg, idx) => (
+                    <div key={idx} className={`chat-bubble-v2 ${msg.role}`}>
+                      {msg.html
+                        ? <span dangerouslySetInnerHTML={{ __html: msg.html }} />
+                        : msg.text}
+                      {msg.role === 'ai' && msg.isOffline && (
+                        <div style={{ fontSize: 8, color: 'var(--text-3)', marginTop: 2, fontStyle: 'italic' }}>
+                          คำตอบนี้มาจาก offline fallback ไม่ใช่ Typhoon AI สด
+                        </div>
+                      )}
+                      <span className="btime">{msg.time}</span>
                     </div>
-                    <p style={{ fontSize: 11, color: 'var(--text-2)', lineHeight: 1.4 }}>{log.reason}</p>
-                    <span style={{ fontSize: 9, color: 'var(--text-3)' }}>ผู้บันทึก: {log.officer}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* System log */}
-            <div className="sb-section">
-              <div className="sb-section-header">
-                <span className="sb-section-title">บันทึกระบบ</span>
-              </div>
-              <div style={{ background: 'var(--bg-base)', borderRadius: 'var(--radius)', padding: '8px 10px', maxHeight: 110, overflowY: 'auto' }}>
-                {terminalLogs.length === 0 ? (
-                  <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>
-                    เชื่อมต่อศูนย์ปฏิบัติการ GISTDA...
-                  </div>
-                ) : terminalLogs.map((log, idx) => (
-                  <div key={idx} style={{ fontSize: 10, fontFamily: 'var(--font-mono)', lineHeight: 1.6, color: log.type === 'warn' ? 'var(--warn)' : log.type === 'error' ? 'var(--danger)' : 'var(--text-3)' }}>
-                    [{log.time}] {log.text}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-          </div>{/* end sidebar-scroll */}
-
-          {/* ── AI Chat ── fixed at sidebar bottom */}
-          <div className="chat-section">
-            <div style={{ padding: '6px 16px', borderBottom: '1px solid var(--border)' }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: 1, fontFamily: 'var(--font-en)' }}>
-                Typhoon AI · ผู้ช่วยปฏิบัติการ
-              </span>
-            </div>
-            <div className="chat-messages">
-              {chatMessages.map((msg, idx) => (
-                <div key={idx} className={`chat-bubble ${msg.role}`}>
-                  {msg.html
-                    ? <span dangerouslySetInnerHTML={{ __html: msg.html }} />
-                    : msg.text}
-                  <span className="bubble-time">{msg.time}</span>
+                  ))}
+                  {isTyping && (
+                    <div className="chat-typing-v2">
+                      <div className="typing-dot-v2" /><div className="typing-dot-v2" /><div className="typing-dot-v2" />
+                    </div>
+                  )}
                 </div>
-              ))}
-              {isTyping && (
-                <div className="chat-typing">
-                  <div className="typing-dot" /><div className="typing-dot" /><div className="typing-dot" />
+                <div className="chat-input-v2">
+                  <input
+                    className="chat-input-field-v2"
+                    placeholder="สอบถามสถานการณ์น้ำท่วม..."
+                    value={chatInput}
+                    onChange={e => setChatInput(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && sendChat()}
+                  />
+                  <button className="chat-send-btn-v2" onClick={() => sendChat()} disabled={isTyping}>ส่ง</button>
                 </div>
-              )}
-            </div>
-            <div className="chat-input-row">
-              <input
-                className="chat-input-field"
-                placeholder="สอบถามสถานการณ์น้ำท่วม..."
-                value={chatInput}
-                onChange={e => setChatInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && sendChat()}
-              />
-              <button className="chat-send-btn" onClick={() => sendChat()} disabled={isTyping}>
-                ส่ง
+              </div>
+
+              {/* Mission button */}
+              <button
+                className="mission-btn"
+                onClick={() => addToast('เริ่มปฏิบัติการกู้ภัยสำเร็จ', 'success')}
+              >
+                เริ่มปฏิบัติการกู้ภัย
               </button>
+
             </div>
-          </div>
+          </aside>
 
-          <button
-            className="mission-btn"
-            onClick={() => addToast('เริ่มปฏิบัติการกู้ภัยสำเร็จ — กำลังแจ้งหน่วยงานที่เกี่ยวข้อง', 'success')}
-          >
-            เริ่มปฏิบัติการกู้ภัย
-          </button>
-
-        </aside>
-      </div>
+        </div>
       )}
 
       {/* ── Geospatial Page ── */}
@@ -1211,8 +1890,8 @@ export default function App() {
           <div className="gov-full-width-page">
             <div className="gov-page-header">
               <div className="gov-page-title">
-                <h2>วิเคราะห์สารสนเทศภูมิศาสตร์และข้อมูลดาวเทียม (Geospatial & Satellite Analysis)</h2>
-                <p>รายงานข้อมูลจุดเสี่ยงภัยแล้ง/น้ำท่วม จากระบบดาวเทียม Sentinel-1A SAR และ GISTDA Sphere Map</p>
+                <h2>ติดตามสภาพน้ำท่วมและสภาพอากาศ (Geospatial Flood Monitoring & Weather Analysis)</h2>
+                <p>รายงานข้อมูลจุดเสี่ยงน้ำท่วมจังหวัดเชียงราย (4 อำเภอ) จาก GISTDA Flood Monitoring Layer (WMS + Open Data API) และข้อมูลฝนรายสถานี TMD</p>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <input
@@ -1231,8 +1910,7 @@ export default function App() {
                   onChange={e => setGeoSearch(e.target.value)}
                 />
                 <button
-                  className="alert-banner-refresh"
-                  style={{ padding: '6px 12px', fontSize: '11px', whiteSpace: 'nowrap' }}
+                  style={{ background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', color: 'var(--blue-primary)', borderRadius: 'var(--radius)', padding: '6px 12px', fontSize: '11px', whiteSpace: 'nowrap', cursor: 'pointer', fontFamily: 'var(--font-th)' }}
                   onClick={fetchGistdaFloodData}
                 >
                   อัปเดตข้อมูล GISTDA API
@@ -1244,7 +1922,7 @@ export default function App() {
               {/* Table side */}
               <div className="gov-card" style={{ flex: 1, overflow: 'hidden' }}>
                 <div className="gov-card-header">
-                  <h3>ตารางพิกัดจุดเสี่ยงน้ำท่วม GISTDA Open Data (เชียงใหม่)</h3>
+                  <h3>ตารางพิกัดจุดเสี่ยงน้ำท่วม GISTDA Open Data (เชียงราย)</h3>
                   <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>พบทั้งหมด {filteredRiskPoints.length} พื้นที่</span>
                 </div>
                 <div className="gov-table-wrapper">
@@ -1261,8 +1939,12 @@ export default function App() {
                     <tbody>
                       {filteredRiskPoints.length === 0 ? (
                         <tr>
-                          <td colSpan="5" style={{ textAlign: 'center', color: 'var(--text-3)', padding: '20px' }}>
-                            ไม่พบข้อมูลจุดเสี่ยงตามเงื่อนไขที่ระบุ
+                          <td colSpan="5" style={{ textAlign: 'center', color: 'var(--text-3)', padding: '28px' }}>
+                            {!gistdaLive
+                              ? '⏳ กำลังโหลดข้อมูลจาก GISTDA API...'
+                              : geoSearch
+                                ? 'ไม่พบพื้นที่ตรงกับคำค้นหา'
+                                : '✅ ไม่พบพื้นที่น้ำท่วมใน จ.เชียงราย จาก GISTDA Flood API ในช่วงเวลานี้'}
                           </td>
                         </tr>
                       ) : (
@@ -1292,14 +1974,14 @@ export default function App() {
                 </div>
               </div>
 
-              {/* SAR & Radar side */}
+              {/* GISTDA Flood Monitoring side */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', overflowY: 'auto', maxHeight: '100%', paddingRight: '4px' }}>
                 
                 {/* TMD Rain Radar Card */}
                 <div className="radar-container">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-2)', fontFamily: 'var(--font-th)' }}>🛰️ สถานีเรดาร์ปริมาณฝน TMD (Meteorological Radar)</h3>
-                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px', animation: 'blink 1.5s infinite' }}>LIVE SCANNING</span>
+                    <h3 style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-2)', fontFamily: 'var(--font-th)' }}>🌧 ข้อมูลปริมาณฝนรายสถานี TMD (Station Rainfall Visualization)</h3>
+                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px' }}>TMD NWP LIVE</span>
                   </div>
 
                   <div className="radar-grid">
@@ -1313,14 +1995,14 @@ export default function App() {
 
                     {WEATHER_STATIONS.map((st) => {
                       const d = stationData[st.id];
-                      const rainVal = d?.rr != null && !isNaN(d.rr) ? Number(d.rr) : 0;
+                      const rainVal = d?.rain != null && !isNaN(d.rain) ? Number(d.rain) : 0;
                       const scale = 220; 
                       const dx = (st.lon - 98.99) * scale;
                       const dy = -(st.lat - 18.79) * scale; 
                       const blipClass = rainVal > 10 ? 'heavy' : rainVal > 3 ? 'moderate' : 'light';
                       
                       return (
-                        <React.Fragment key={st.id}>
+                        <Fragment key={st.id}>
                           <div
                             className={`radar-blip ${blipClass}`}
                             style={{
@@ -1337,7 +2019,7 @@ export default function App() {
                           >
                             {st.name.substring(0, 5)}: {rainVal.toFixed(1)} mm
                           </div>
-                        </React.Fragment>
+                        </Fragment>
                       );
                     })}
                   </div>
@@ -1346,21 +2028,13 @@ export default function App() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '4px' }}>
                       <span style={{ color: 'var(--text-3)' }}>ปริมาณฝนเฉลี่ยรายชั่วโมง:</span>
                       <strong>
-                        {(WEATHER_STATIONS.reduce((acc, curr) => acc + (stationData[curr.id]?.rr || 0), 0) / WEATHER_STATIONS.length).toFixed(2)} mm/hr
+                        {(WEATHER_STATIONS.reduce((acc, curr) => acc + (stationData[curr.id]?.rain || 0), 0) / WEATHER_STATIONS.length).toFixed(2)} mm/hr
                       </strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '4px' }}>
                       <span style={{ color: 'var(--text-3)' }}>สถานีตรวจวัดฝนสูงสุด:</span>
                       <strong style={{ color: 'var(--warn)' }}>
-                        {(() => {
-                          let maxSt = null;
-                          let maxVal = -1;
-                          WEATHER_STATIONS.forEach(s => {
-                            const val = stationData[s.id]?.rr || 0;
-                            if (val > maxVal) { maxVal = val; maxSt = s.name; }
-                          });
-                          return `${maxSt || '—'} (${maxVal.toFixed(1)} mm)`;
-                        })()}
+                        {maxRainStation.name ? `${maxRainStation.name} (${maxRainStation.val.toFixed(1)} mm)` : '—'}
                       </strong>
                     </div>
                   </div>
@@ -1368,73 +2042,76 @@ export default function App() {
 
                 <div className="gov-card">
                   <div className="gov-card-header">
-                    <h3>สถานะ Sentinel-1A SAR Telemetry</h3>
+                    <h3>GISTDA Flood Monitoring Layer</h3>
+                    <span className="route-status-tag tag-safe" style={{ fontSize: '9px' }}>
+                      {gistdaRiskPoints.length > 0 ? '● LAYER ACTIVE' : '○ Layer configured'}
+                    </span>
                   </div>
                   <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '11px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Radar Mode:</span>
-                      <strong>Interferometric Wide (IW)</strong>
+                      <span style={{ color: 'var(--text-3)' }}>Active Range:</span>
+                      <strong style={{ color: 'var(--accent)' }}>{floodRange === '1day' ? '1 วัน' : floodRange === '3days' ? '3 วัน' : floodRange === '7days' ? '7 วัน' : '30 วัน'}</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Polarisation:</span>
-                      <strong>VV + VH Dual-Pol</strong>
+                      <span style={{ color: 'var(--text-3)' }}>WMS Endpoint:</span>
+                      <strong style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>/maps/flood/{floodRange}/wms</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Spatial Resolution:</span>
-                      <strong>20m x 20m pixel spacing</strong>
+                      <span style={{ color: 'var(--text-3)' }}>Vector API:</span>
+                      <strong style={{ fontFamily: 'var(--font-mono)', fontSize: '10px' }}>/features/flood/7days</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Processing Level:</span>
-                      <strong>L1 GRD (Ground Range)</strong>
+                      <span style={{ color: 'var(--text-3)' }}>Source:</span>
+                      <strong>GISTDA Open Data API</strong>
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <span style={{ color: 'var(--text-3)' }}>Scan Active:</span>
-                      <strong style={{ color: 'var(--safe)' }}>● ACTIVE SCANNING</strong>
+                      <span style={{ color: 'var(--text-3)' }}>Last Fetched:</span>
+                      <strong>{new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</strong>
                     </div>
                   </div>
                 </div>
 
                 <div className="gov-card">
                   <div className="gov-card-header">
-                    <h3>วิเคราะห์พื้นที่รับน้ำท่วมขัง (SAR Mask)</h3>
+                    <h3>สถิติพื้นที่น้ำท่วม (GISTDA /features/flood/7days)</h3>
                   </div>
                   <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px' }}>
-                        <span>พื้นที่เสี่ยงน้ำท่วมสะสม (ตาราง กม.)</span>
-                        <strong style={{ fontFamily: 'var(--font-mono)' }}>184.2 km²</strong>
+                        <span>จำนวน polygon น้ำท่วมที่ตรวจพบ</span>
+                        <strong style={{ fontFamily: 'var(--font-mono)' }}>{gistdaRiskPoints.length} จุด</strong>
                       </div>
                       <div style={{ height: '6px', background: 'var(--bg-panel-alt)', borderRadius: '3px', overflow: 'hidden' }}>
-                        <div style={{ width: '64%', height: '100%', background: 'var(--danger)' }} />
+                        <div style={{ width: `${Math.min(gistdaRiskPoints.length / 2, 100)}%`, height: '100%', background: gistdaRiskPoints.length > 100 ? 'var(--danger)' : gistdaRiskPoints.length > 30 ? 'var(--warn)' : 'var(--safe)' }} />
                       </div>
                     </div>
 
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px' }}>
-                        <span>พื้นที่เกษตรกรรมได้รับผลกระทบ</span>
-                        <strong style={{ fontFamily: 'var(--font-mono)' }}>4,821 ไร่</strong>
+                        <span>ระดับวิกฤต (severity &gt; 0.75)</span>
+                        <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--danger)' }}>
+                          {gistdaRiskPoints.filter(p => p.severity > 0.75).length} จุด
+                        </strong>
                       </div>
                       <div style={{ height: '6px', background: 'var(--bg-panel-alt)', borderRadius: '3px', overflow: 'hidden' }}>
-                        <div style={{ width: '48%', height: '100%', background: 'var(--warn)' }} />
+                        <div style={{ width: gistdaRiskPoints.length ? `${(gistdaRiskPoints.filter(p => p.severity > 0.75).length / gistdaRiskPoints.length) * 100}%` : '0%', height: '100%', background: 'var(--danger)' }} />
                       </div>
                     </div>
 
                     <div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px' }}>
-                        <span>พื้นที่ชุมชน/สิ่งปลูกสร้างเสี่ยง</span>
-                        <strong style={{ fontFamily: 'var(--font-mono)' }}>12 เขตเทศบาล</strong>
+                        <span>เฝ้าระวัง (severity 0.5–0.75)</span>
+                        <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--warn)' }}>
+                          {gistdaRiskPoints.filter(p => p.severity > 0.5 && p.severity <= 0.75).length} จุด
+                        </strong>
                       </div>
                       <div style={{ height: '6px', background: 'var(--bg-panel-alt)', borderRadius: '3px', overflow: 'hidden' }}>
-                        <div style={{ width: '30%', height: '100%', background: 'var(--blue-primary)' }} />
+                        <div style={{ width: gistdaRiskPoints.length ? `${(gistdaRiskPoints.filter(p => p.severity > 0.5 && p.severity <= 0.75).length / gistdaRiskPoints.length) * 100}%` : '0%', height: '100%', background: 'var(--warn)' }} />
                       </div>
                     </div>
 
-                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.01)', border: '1px dashed var(--border-strong)', borderRadius: 'var(--radius)', padding: '16px', textAlign: 'center' }}>
-                      <div>
-                        <span style={{ fontSize: '24px' }}>📡</span>
-                        <h4 style={{ fontSize: '11px', fontWeight: '700', marginTop: '8px', color: 'var(--text-1)' }}>เชื่อมโยงสถานีดาวเทียม GISTDA</h4>
-                        <p style={{ fontSize: '9px', color: 'var(--text-3)', marginTop: '4px', maxWidth: '200px' }}>การดึงข้อมูล SAR polygon overlay มีการอัปเดตทุก 24 ชั่วโมงตามรอบวงโคจรผ่านพิกัดประเทศไทย</p>
-                      </div>
+                    <div style={{ fontSize: '10px', color: 'var(--text-3)', textAlign: 'center', padding: '8px', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
+                      ข้อมูลจาก GISTDA Open Data API · อัปเดตทุก 15 นาที · จ.เชียงราย (pv_idn=57)
                     </div>
                   </div>
                 </div>
@@ -1450,8 +2127,8 @@ export default function App() {
           <div className="gov-full-width-page">
             <div className="gov-page-header">
               <div className="gov-page-title">
-                <h2>การจัดสรรกำลังพลและกู้ชีพ (Logistics & Rescue Resource Planner)</h2>
-                <p>ระบบปัญญาประดิษฐ์วิเคราะห์เส้นทางน้ำท่วมและจัดส่งบุคลากรช่วยเหลือผู้ประสบภัยตามลำดับความเร่งด่วน</p>
+                <h2>จำลองการวางแผนกำลังพลกู้ภัย (Demo Resource Planning)</h2>
+                <p>เครื่องมือจำลองการจัดสรรทรัพยากรกู้ภัย — ข้อมูลจราจร CCTV/Supabase เป็น live, ตัวเลขกำลังพลและ optimizer เป็นการจำลองเพื่อสาธิต</p>
               </div>
               <button
                 className="mission-btn"
@@ -1459,7 +2136,7 @@ export default function App() {
                 onClick={runResourceOptimizer}
                 disabled={optimizerRunning}
               >
-                {optimizerRunning ? 'กำลังคำนวณการจัดสรร...' : '⚙️ รัน AI Resource Solver'}
+                {optimizerRunning ? 'กำลังจำลอง...' : '⚗ รัน Demo Resource Simulation'}
               </button>
             </div>
 
@@ -1468,7 +2145,12 @@ export default function App() {
               <div className="gov-card" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                 <div className="gov-card-header">
                   <h3>เครื่องมือจำลองจัดสรรกองกำลัง AI Optimizer</h3>
-                  {optimizerRunning && <span className="route-status-tag tag-warn">กำลังประมวลผล {optimizerProgress}%</span>}
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: 'rgba(139,92,246,0.15)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.4)' }}>
+                      ⚗ DEMO SIMULATION
+                    </span>
+                    {optimizerRunning && <span className="route-status-tag tag-warn">กำลังประมวลผล {optimizerProgress}%</span>}
+                  </div>
                 </div>
                 <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '20px', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
                   
@@ -1476,7 +2158,7 @@ export default function App() {
                   <div style={{ position: 'relative', width: '160px', height: '160px', borderRadius: '50%', background: `conic-gradient(var(--blue-primary) ${optimizerProgress}%, var(--bg-panel-alt) ${optimizerProgress}% 100%)`, display: 'flex', alignItems: 'center', justifyItems: 'center', justifyContent: 'center', boxShadow: '0 0 20px var(--blue-glow)' }}>
                     <div style={{ position: 'absolute', inset: '8px', background: 'var(--bg-panel)', borderRadius: '50%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
                       <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>AI PROGRESS</span>
-                      <strong style={{ fontSize: '28px', color: '#fff', fontFamily: 'var(--font-mono)' }}>{optimizerProgress}%</strong>
+                      <strong style={{ fontSize: '28px', color: 'var(--text-1)', fontFamily: 'var(--font-mono)' }}>{optimizerProgress}%</strong>
                       <span style={{ fontSize: '9px', color: optimizerRunning ? 'var(--warn)' : 'var(--safe)', fontWeight: '600' }}>
                         {optimizerRunning ? 'OPTIMIZING...' : 'SOLVER READY'}
                       </span>
@@ -1484,12 +2166,17 @@ export default function App() {
                   </div>
 
                   <div style={{ width: '100%' }}>
-                    <h4 style={{ fontSize: '11px', fontWeight: '700', marginBottom: '8px', color: 'var(--text-2)' }}>ตัวเลขจัดสรรทรัพยากรระดับภาคสนาม</h4>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <h4 style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-2)', margin: 0 }}>ตัวเลขจัดสรรทรัพยากร</h4>
+                      {resources.boats !== '—' && (
+                        <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: 'rgba(139,92,246,0.12)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.3)' }}>⚗ ข้อมูลจำลอง</span>
+                      )}
+                    </div>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
                       {[
                         { label: 'เรือท้องแบนกู้ชีพ', value: resources.boats, color: 'var(--safe)' },
                         { label: 'ทีมแพทย์/กู้ภัยหลัก', value: resources.teams, color: 'var(--blue-primary)' },
-                        { label: 'ยอดรอการช่วยเหลือ', value: `${resources.waiting} ราย`, color: 'var(--danger)' }
+                        { label: 'ยอดรอการช่วยเหลือ', value: resources.waiting === '—' ? '—' : `${resources.waiting} ราย`, color: 'var(--danger)' }
                       ].map(item => (
                         <div key={item.label} style={{ background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px 8px', textAlign: 'center' }}>
                           <div style={{ fontSize: '9px', color: 'var(--text-3)', marginBottom: '4px' }}>{item.label}</div>
@@ -1500,14 +2187,17 @@ export default function App() {
                   </div>
 
                   <div style={{ width: '100%', flex: 1, background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '12px', overflowY: 'auto' }}>
-                    <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', borderBottom: '1px solid var(--border)', paddingBottom: '4px', marginBottom: '6px' }}>SOLVER REAL-TIME VERBOSE LOGS:</div>
+                    <div style={{ fontSize: '9px', fontFamily: 'var(--font-mono)', color: 'var(--text-3)', borderBottom: '1px solid var(--border)', paddingBottom: '4px', marginBottom: '6px', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>SIMULATION LOG (ข้อมูลจำลองเพื่อสาธิต):</span>
+                      <span style={{ color: '#a78bfa' }}>⚗ SIMULATED</span>
+                    </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
-                      <div>[INFO] AI solver engine v1.4 loaded parameters...</div>
-                      <div>[INFO] Graph matrices: 3 sectors, 12 flood nodes.</div>
-                      {optimizerProgress > 10 && <div style={{ color: 'var(--warn)' }}>[CALC] Simulation of path risk coefficient for Sector A completed.</div>}
-                      {optimizerProgress > 40 && <div style={{ color: 'var(--warn)' }}>[CALC] Re-routing vehicles to circumvent blocked Route C.</div>}
-                      {optimizerProgress > 70 && <div style={{ color: '#60a5fa' }}>[ALLO] Allocating teams from high altitude to lower floodplain...</div>}
-                      {optimizerProgress === 100 && <div style={{ color: 'var(--safe)' }}>[DONE] Resource solver task: evacuated 68 priority survivors successfully.</div>}
+                      <div style={{ color: 'var(--text-3)' }}>[SIMULATED] Demo solver engine loaded parameters...</div>
+                      <div style={{ color: 'var(--text-3)' }}>[SIMULATED] Graph matrices: 3 sectors, 12 flood nodes.</div>
+                      {optimizerProgress > 10 && <div style={{ color: 'var(--warn)' }}>[SIMULATED] Path risk coefficient for Sector A calculated.</div>}
+                      {optimizerProgress > 40 && <div style={{ color: 'var(--warn)' }}>[SIMULATED] Re-routing demo vehicles to circumvent Route C.</div>}
+                      {optimizerProgress > 70 && <div style={{ color: 'var(--blue-primary)' }}>[SIMULATED] Allocating demo teams to lower floodplain zones...</div>}
+                      {optimizerProgress === 100 && <div style={{ color: 'var(--safe)' }}>[SIMULATED] Demo complete — สาธิตเสร็จสิ้น</div>}
                     </div>
                   </div>
 
@@ -1517,43 +2207,43 @@ export default function App() {
               {/* Sectors side */}
               <div className="gov-card" style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                 <div className="gov-card-header">
-                  <h3>สถิติและเป้าหมายการแบ่งเขตพื้นที่ (Sector Operational Metrics)</h3>
+                  <h3>Sector Operational Metrics</h3>
+                  <span style={{ fontSize: '8px', fontWeight: 700, padding: '1px 5px', borderRadius: 3, background: 'rgba(139,92,246,0.12)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.3)' }}>⚗ สถานการณ์ตัวอย่าง</span>
                 </div>
                 <div className="gov-card-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
                   
                   {[
-                    { id: 'A', name: 'เขตพื้นที่เหนือ (อำเภอแม่ริม - ช้างเผือก)', officer: 'ร.ต.อ. นพดล สุวรรณดิษฐ์', progress: 90, status: 'ปลอดภัยสูง', tag: 'tag-safe', count: vehicleData.A?.vehicle_count ?? 0, speed: vehicleData.A?.avg_speed ?? 0 },
-                    { id: 'B', name: 'เขตพื้นที่กลาง (เมืองเชียงใหม่ - คูเมือง)', officer: 'พ.ต.ท. สมชาติ ประชาไทย', progress: 65, status: 'หนาแน่น/ระวัง', tag: 'tag-warn', count: vehicleData.B?.vehicle_count ?? 0, speed: vehicleData.B?.avg_speed ?? 0 },
-                    { id: 'C', name: 'เขตพื้นที่ใต้ (อำเภอสารภี - หางดง)', officer: 'จ.ส.ต. อรรถพล รอดคง', progress: 20, status: 'วิกฤต/น้ำหลาก', tag: 'tag-danger', count: vehicleData.C?.vehicle_count ?? 0, speed: vehicleData.C?.avg_speed ?? 0 }
+                    { id: 'A', name: 'เขตพื้นที่เหนือ (อ.แม่สาย - อ.เมืองเชียงราย)', officer: 'ร.ต.อ. นพดล สุวรรณดิษฐ์', progress: 90, status: 'ปลอดภัยสูง', tag: 'tag-safe', count: vehicleData.A?.vehicle_count ?? 0, speed: vehicleData.A?.avg_speed ?? 0 },
+                    { id: 'B', name: 'เขตพื้นที่กลาง (อ.เมืองเชียงราย - อ.เทิง)', officer: 'พ.ต.ท. สมชาติ ประชาไทย', progress: 65, status: 'หนาแน่น/ระวัง', tag: 'tag-warn', count: vehicleData.B?.vehicle_count ?? 0, speed: vehicleData.B?.avg_speed ?? 0 },
+                    { id: 'C', name: 'เขตพื้นที่ใต้ (อ.เวียงป่าเป้า - อ.เชียงของ)', officer: 'จ.ส.ต. อรรถพล รอดคง', progress: 20, status: 'วิกฤต/น้ำหลาก', tag: 'tag-danger', count: vehicleData.C?.vehicle_count ?? 0, speed: vehicleData.C?.avg_speed ?? 0 }
                   ].map(sector => (
                     <div key={sector.id} style={{ background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div>
-                          <strong style={{ fontSize: '12px', color: '#fff' }}>Sector {sector.id} - {sector.name}</strong>
+                          <strong style={{ fontSize: '12px', color: 'var(--text-1)' }}>Sector {sector.id} — {sector.name}</strong>
                           <div style={{ fontSize: '10px', color: 'var(--text-3)', marginTop: '2px' }}>ผู้บัญชาการพื้นที่: {sector.officer}</div>
                         </div>
                         <span className={`route-status-tag ${sector.tag}`}>{sector.status}</span>
                       </div>
-                      
+
                       <div>
                         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: 'var(--text-2)', marginBottom: '4px' }}>
                           <span>ความคืบหน้าการระบายพลช่วยเหลือ</span>
                           <strong>{sector.progress}%</strong>
                         </div>
-                        <div style={{ height: '4px', background: 'var(--bg-panel)', borderRadius: '2px', overflow: 'hidden' }}>
+                        <div style={{ height: '4px', background: 'var(--border)', borderRadius: '2px', overflow: 'hidden' }}>
                           <div style={{ width: `${sector.progress}%`, height: '100%', background: sector.id === 'A' ? 'var(--safe)' : sector.id === 'B' ? 'var(--warn)' : 'var(--danger)' }} />
                         </div>
                       </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', fontSize: '10px', marginTop: '4px' }}>
-                        <div style={{ background: 'var(--bg-panel)', padding: '4px 6px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-3)' }}>ปริมาณจราจร:</span> <strong style={{ color: '#fff' }}>{sector.count} คัน</strong>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', fontSize: '10px', marginTop: '4px' }}>
+                        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '4px 6px', borderRadius: '4px' }}>
+                          <div style={{ fontSize: '8px', color: 'var(--text-3)', marginBottom: '1px' }}>CCTV Supabase live</div>
+                          <span style={{ color: 'var(--text-3)' }}>ยานพาหนะ:</span> <strong style={{ color: 'var(--text-1)' }}>{sector.count} คัน</strong>
                         </div>
-                        <div style={{ background: 'var(--bg-panel)', padding: '4px 6px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-3)' }}>ความเร็วเฉลี่ย:</span> <strong style={{ color: '#fff' }}>{sector.speed} กม/ชม</strong>
-                        </div>
-                        <div style={{ background: 'var(--bg-panel)', padding: '4px 6px', borderRadius: '4px' }}>
-                          <span style={{ color: 'var(--text-3)' }}>ทีมปฏิบัติการ:</span> <strong style={{ color: '#fff' }}>1 ทีมหลัก</strong>
+                        <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', padding: '4px 6px', borderRadius: '4px' }}>
+                          <div style={{ fontSize: '8px', color: 'var(--text-3)', marginBottom: '1px' }}>CCTV Supabase live</div>
+                          <span style={{ color: 'var(--text-3)' }}>ความเร็ว:</span> <strong style={{ color: 'var(--text-1)' }}>{sector.speed} กม/ชม</strong>
                         </div>
                       </div>
                     </div>
@@ -1572,8 +2262,8 @@ export default function App() {
           <div className="gov-full-width-page" style={{ background: 'var(--bg-panel)' }}>
             <div className="gov-page-header no-print">
               <div className="gov-page-title">
-                <h2>สรุปรายงานระดับผู้บริหาร (Executive Official Briefing)</h2>
-                <p>เอกสารสรุปสถานการณ์ระดับผู้ว่าราชการจังหวัดและอธิบดีกรมป้องกันและบรรเทาสาธารณภัย (พิมพ์ออกเป็นทางการได้)</p>
+                <h2>สรุปสถานการณ์ระดับผู้บริหาร (Executive Situation Briefing Template)</h2>
+                <p>เอกสารสรุปสถานการณ์น้ำท่วมระดับจังหวัด — ตัวอย่างรูปแบบรายงาน (Demo Report Template) ข้อมูลสดจาก GISTDA · TMD · Typhoon AI</p>
               </div>
               <button
                 className="mission-btn"
@@ -1591,48 +2281,57 @@ export default function App() {
                 <div style={{ textAlign: 'center', marginBottom: '20px' }}>
                   <div style={{ fontSize: '32px', filter: 'grayscale(1) sepia(100%) hue-rotate(0deg) saturate(1000%)' }}>🛡️</div>
                   <h2 style={{ fontSize: '14px', fontWeight: '800', marginTop: '10px', color: '#000', fontFamily: 'var(--font-th)' }}>
-                    ศูนย์บัญชาการสถานการณ์ภัยพิบัติเชียงใหม่ร่วม (GISTDA & TMD & DDPM)
+                    รายงานสถานการณ์น้ำท่วมจังหวัดเชียงราย (GISTDA · TMD · DDPM)
                   </h2>
                   <p style={{ fontSize: '10px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                    MEMORANDUM ON STATE EMERGENCY DISASTER MITIGATION
+                    FLOOD SITUATION BRIEFING — EXECUTIVE SUMMARY (DEMO TEMPLATE)
                   </p>
                 </div>
 
                 <div style={{ borderBottom: '2px solid #000', paddingBottom: '10px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#333' }}>
-                  <div><strong>ฉบับที่:</strong> GISTDA-CM-2026-05</div>
-                  <div><strong>วันที่รายงาน:</strong> {new Date().toLocaleDateString('th-TH')} ณ เวลา {clock}</div>
+                  <div><strong>ฉบับ:</strong> ตัวอย่างรายงาน (Demo Report)</div>
+                  <div><strong>วันที่:</strong> {new Date().toLocaleDateString('th-TH')} ณ เวลา {clock}</div>
                 </div>
 
                 <div style={{ fontSize: '12px', lineHeight: '1.8', color: '#222' }}>
-                  <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๑. สรุปภาพรวมสถานการณ์โดยปัญญาประดิษฐ์ (Typhoon AI Situational Intelligence)</h3>
-                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '8px', padding: '16px', color: '#1e293b', fontStyle: 'italic', marginBottom: '20px' }}>
-                    "{briefing.text || 'ยังไม่มีสรุปสถานการณ์จาก Typhoon AI กรุณาคลิกรับบรีฟจากหน้าศูนย์หลัก'}"
+                  <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    ๑. สรุปภาพรวมสถานการณ์โดยปัญญาประดิษฐ์ (Typhoon AI)
+                    <span style={{ fontSize: '9px', fontWeight: 700, padding: '1px 6px', borderRadius: 3, background: briefing.typhoonStatus === 'live' ? '#dcfce7' : '#fee2e2', color: briefing.typhoonStatus === 'live' ? '#16a34a' : '#dc2626', border: `1px solid ${briefing.typhoonStatus === 'live' ? '#86efac' : '#fca5a5'}`, fontStyle: 'normal' }}>
+                      {briefing.typhoonStatus === 'live' ? '● LIVE AI' : briefing.typhoonStatus === 'offline' ? '○ AI OFFLINE' : '○ PENDING'}
+                    </span>
+                  </h3>
+                  <div style={{ background: briefing.typhoonStatus === 'offline' ? '#fff7ed' : '#f8fafc', border: `1px solid ${briefing.typhoonStatus === 'offline' ? '#fed7aa' : '#e2e8f0'}`, borderRadius: '8px', padding: '16px', color: '#1e293b', fontStyle: 'italic', marginBottom: '20px' }}>
+                    {briefing.text
+                      ? `"${briefing.text}"`
+                      : briefing.typhoonStatus === 'offline'
+                        ? <span style={{ fontStyle: 'normal', fontSize: '11px', color: '#92400e' }}>⚠ Typhoon AI offline{briefing.fallbackReason ? ` — ${briefing.fallbackReason}` : ''}<br/>ระดับเฝ้าระวัง {alertLevel} คำนวณจากข้อมูลเซ็นเซอร์ (TMD/CCTV) โดยไม่มีการสรุปภาษาธรรมชาติ</span>
+                        : 'ยังไม่มีสรุปสถานการณ์ — กดรีเฟรชที่หน้าศูนย์หลักเพื่อรับสรุปจาก Typhoon AI'}
                   </div>
 
                   <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๒. สภาพอากาศและการประเมินความเสี่ยง TMD</h3>
                   <p style={{ marginBottom: '16px' }}>
                     กรมอุตุนิยมวิทยา (TMD Live) ตรวจวัดอุณหภูมิปัจจุบันบริเวณตัวเมืองได้ {cityCur.tc != null ? `${cityCur.tc.toFixed(1)}°C` : '—'} 
-                    โดยมีปริมาณน้ำฝน {cityCur.rr != null ? `${cityCur.rr.toFixed(1)} มิลลิเมตร/ชั่วโมง` : '—'} 
-                    กำลังทิศทางลมพัด {cityCur.ws != null ? `${cityCur.ws.toFixed(1)} เมตร/วินาที` : '—'} 
+                    โดยมีปริมาณน้ำฝน {cityCur.rain != null ? `${cityCur.rain.toFixed(1)} มิลลิเมตร/ชั่วโมง` : '—'}
+                    กำลังทิศทางลมพัด {cityCur.ws10m != null ? `${cityCur.ws10m.toFixed(1)} เมตร/วินาที` : '—'}
                     สถานีเฝ้าระวังรายงานระดับน้ำสะสมอยู่ในโหมดเฝ้าระวังปานกลาง
                   </p>
 
-                  <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๓. แนะนำเส้นทางและความปลอดภัยทางวิศวกรรม (OSRM Analysis)</h3>
+                  <h3 style={{ fontSize: '13px', fontWeight: '700', marginBottom: '8px', color: '#000' }}>๓. แนะนำเส้นทางและความปลอดภัยทางวิศวกรรม (NetworkX A* Flood-Aware Routing)</h3>
                   <p style={{ marginBottom: '20px' }}>
                     เส้นทางเดินหลักในภารกิจกู้ชีพ (Route A - {ROUTES_BASE[0].name}) ประเมินสถานะในเกณฑ์ <strong>{ROUTES_BASE[0].status}</strong> 
                     โดยมีระดับความสูงน้ำขังเฉลี่ยที่ {routePaths.A?.depth ?? '0.0'} เมตร และอัตราเสี่ยงภัยพิบัติ {routePaths.A?.risk ?? '0'}%. 
                     หลีกเลี่ยงเส้นทางพื้นที่ลุ่มต่ำสะสมในโซนใต้ (Route C - {ROUTES_BASE[2].name}) ซึ่งมีระดับน้ำสูงสุดเกือบวิกฤต
                   </p>
 
-                  {/* Official sign-off block */}
+                  {/* Sign-off block */}
                   <div style={{ marginTop: '40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <span style={{ fontSize: '10px', color: '#666' }}>ระบบจัดทำรายงานอัตโนมัติของรัฐ</span>
-                      <div style={{ fontSize: '10px', color: '#333', marginTop: '4px' }}>Security Hash: <strong>SHA-256/GISTDA-EOC-989F</strong></div>
+                      <span style={{ fontSize: '10px', color: '#666' }}>สร้างอัตโนมัติโดย FloodNav AI System</span>
+                      <div style={{ fontSize: '9px', color: '#999', marginTop: '4px', fontStyle: 'italic' }}>ตัวอย่างรูปแบบรายงาน (Demo Template) — ไม่ใช่เอกสารราชการ</div>
                     </div>
-                    <div style={{ textAlign: 'center', width: '220px', borderTop: '1px solid #333', paddingTop: '8px', fontSize: '11px' }}>
-                      <strong>(ผู้ว่าราชการจังหวัดเชียงใหม่)</strong><br />
-                      ผู้บัญชาการศูนย์ป้องกันและบรรเทาสาธารณภัยเขตเชียงใหม่
+                    <div style={{ textAlign: 'center', width: '220px', borderTop: '1px solid #ccc', paddingTop: '8px', fontSize: '10px', color: '#666' }}>
+                      <em>(ช่องลงนามผู้อนุมัติ)</em><br />
+                      ผู้บัญชาการศูนย์ป้องกันและบรรเทาสาธารณภัย
                     </div>
                   </div>
                 </div>
@@ -1653,18 +2352,22 @@ export default function App() {
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>ทีมจัดสรรกำลังพล</span>
-                      <strong style={{ color: 'var(--safe)', fontFamily: 'var(--font-mono)' }}>พร้อมปฏิบัติการ</strong>
+                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>ข้อมูลกำลังพล (demo)</span>
+                      <strong style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>ไม่มีข้อมูล real-time</strong>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>ระบบ GISTDA Link</span>
-                      <strong style={{ color: 'var(--safe)', fontFamily: 'var(--font-mono)' }}>CONNECTED</strong>
+                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>GISTDA Flood Layer</span>
+                      <strong style={{ color: gistdaRiskPoints.length > 0 ? 'var(--safe)' : 'var(--text-3)', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
+                        {gistdaRiskPoints.length > 0 ? `LIVE (${gistdaRiskPoints.length} จุด)` : 'OFFLINE'}
+                      </strong>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>ระบบ Typhoon AI Link</span>
-                      <strong style={{ color: 'var(--safe)', fontFamily: 'var(--font-mono)' }}>ACTIVE</strong>
+                      <span style={{ color: 'var(--text-3)', fontSize: '11px' }}>Typhoon AI</span>
+                      <strong style={{ color: briefing.text ? 'var(--safe)' : 'var(--text-3)', fontFamily: 'var(--font-mono)', fontSize: '10px' }}>
+                        {briefing.text ? 'ACTIVE' : 'ยังไม่ได้รับ briefing'}
+                      </strong>
                     </div>
                   </div>
                 </div>
@@ -1682,7 +2385,7 @@ export default function App() {
                       decisionLogs.map((log, idx) => (
                         <div key={idx} style={{ background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderLeft: '3px solid var(--blue-primary)', padding: '8px 10px', borderRadius: 'var(--radius)' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', marginBottom: '2px' }}>
-                            <strong style={{ color: '#60a5fa' }}>{log.route}</strong>
+                            <strong style={{ color: 'var(--blue-primary)' }}>{log.route}</strong>
                             <span style={{ color: 'var(--text-3)', fontFamily: 'var(--font-mono)' }}>{log.time}</span>
                           </div>
                           <p style={{ fontSize: '11px', color: 'var(--text-2)', lineHeight: '1.3' }}>{log.reason}</p>
@@ -1699,9 +2402,9 @@ export default function App() {
       )}
 
       {/* ── Footer ── */}
-      <footer className="gov-footer no-print">
-        <span>ระบบวิเคราะห์น้ำท่วมและข้อมูลดาวเทียมศูนย์บัญชาการสถานการณ์ภัยพิบัติเชียงใหม่ร่วม · GISTDA sphere</span>
-        <span>TMD · OSRM · Supabase CCTV · Typhoon AI · {new Date().toLocaleDateString('th-TH')}</span>
+      <footer className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 14px', background: 'var(--bg-surface)', borderTop: '1px solid var(--border)', fontSize: '9px', color: 'var(--text-3)', flexShrink: 0 }}>
+        <span>ระบบวิเคราะห์น้ำท่วม จ.เชียงราย · GISTDA · TMD · DDPM</span>
+        <span>TMD · NetworkX A* · Supabase CCTV · Typhoon AI · {new Date().toLocaleDateString('th-TH')}</span>
       </footer>
 
     </div>

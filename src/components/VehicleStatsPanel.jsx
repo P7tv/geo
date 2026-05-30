@@ -1,4 +1,3 @@
-import React from 'react';
 
 export default function VehicleStatsPanel({ vehicleData }) {
   const getProgressBlocks = (count, level) => {
@@ -16,43 +15,21 @@ export default function VehicleStatsPanel({ vehicleData }) {
     );
   };
 
+  const CONGESTION_BADGE = {
+    blocked: { bg: 'rgba(255,59,48,0.1)',   border: 'rgba(255,59,48,0.3)',  color: 'var(--critical-red)',  label: '🚫 BLOCKED' },
+    warning: { bg: 'rgba(255,179,0,0.1)',   border: 'rgba(255,179,0,0.3)', color: 'var(--hazard-amber)', label: '⚠️ WARNING' },
+    normal:  { bg: 'rgba(0,212,170,0.1)',   border: 'rgba(0,212,170,0.3)', color: 'var(--neon-emerald)', label: '✓ NORMAL'  },
+  };
+
   const getAlertIcon = (level) => {
-    if (level === 'blocked') {
-      return (
-        <span style={{ 
-          background: 'rgba(255, 59, 48, 0.1)', 
-          border: '1px solid rgba(255, 59, 48, 0.3)', 
-          color: 'var(--critical-red)', 
-          padding: '2px 6px', 
-          borderRadius: '4px',
-          fontWeight: 'bold',
-          fontSize: '9px'
-        }}>🚫 BLOCKED</span>
-      );
-    }
-    if (level === 'warning') {
-      return (
-        <span style={{ 
-          background: 'rgba(255, 179, 0, 0.1)', 
-          border: '1px solid rgba(255, 179, 0, 0.3)', 
-          color: 'var(--hazard-amber)', 
-          padding: '2px 6px', 
-          borderRadius: '4px',
-          fontWeight: 'bold',
-          fontSize: '9px'
-        }}>⚠️ WARNING</span>
-      );
-    }
+    const cfg = CONGESTION_BADGE[level] ?? CONGESTION_BADGE.normal;
     return (
-      <span style={{ 
-        background: 'rgba(0, 212, 170, 0.1)', 
-        border: '1px solid rgba(0, 212, 170, 0.3)', 
-        color: 'var(--neon-emerald)', 
-        padding: '2px 6px', 
-        borderRadius: '4px',
-        fontWeight: 'bold',
-        fontSize: '9px'
-      }}>✓ NORMAL</span>
+      <span style={{
+        background: cfg.bg, border: `1px solid ${cfg.border}`, color: cfg.color,
+        padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold', fontSize: '9px',
+      }}>
+        {cfg.label}
+      </span>
     );
   };
 
