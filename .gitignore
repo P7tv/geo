@@ -30,12 +30,13 @@ dist-ssr
 CLAUDE.md
 .claude/
 
-# Large GIS / OSM data (re-downloadable, not for version control)
+# Large GIS / OSM data
 *.osm.pbf
 *.osm
-# *.pkl
+*.pkl
+!chiang_rai_graph.pkl
 sr_cri.rar
 sr_cri_extracted/
 
-# LDD soil shapefile (extracted from sr_cri.rar)
-เชียงราย/!chiang_rai_graph.pkl
+# LDD soil shapefile
+เชียงราย/
