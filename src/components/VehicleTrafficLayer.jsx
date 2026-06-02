@@ -2,6 +2,16 @@
  * Renders circular floating traffic status badges in the middle coordinates of route polylines
  * Using GISTDA Sphere Map JS API
  */
+
+const escapeHtml = (unsafe) => {
+  return String(unsafe)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+};
+
 export const renderVehicleTrafficBadges = (mapInstance, routePaths, vehicleData, activeRoute) => {
   if (!window.sphere) return [];
   const markers = [];
@@ -38,13 +48,13 @@ export const renderVehicleTrafficBadges = (mapInstance, routePaths, vehicleData,
         box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         white-space: nowrap;
         pointer-events: auto;
-      ">${emoji} ${data.vehicle_count || 0} คัน (${data.avg_speed || 0} กม/ชม)</div>`;
+      ">${escapeHtml(emoji)} ${escapeHtml(data.vehicle_count || 0)} คัน (${escapeHtml(data.avg_speed || 0)} กม/ชม)</div>`;
 
       // Create Sphere Marker with Custom HTML
       const marker = new window.sphere.Marker(
         { lon: midPoint.lon, lat: midPoint.lat },
         {
-          title: `จราจร ${routeId}`,
+          title: `จราจร ${escapeHtml(routeId)}`,
           icon: { html }
         }
       );

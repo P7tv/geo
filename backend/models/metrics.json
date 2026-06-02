@@ -1,0 +1,12 @@
+{
+  "model": "Ensemble_B200_Voting",
+  "accuracy": 0.998631074606434,
+  "f1_score": 0.0,
+  "auc": 1.0,
+  "features": [
+    "f_flood_exposure",
+    "f_forecast_rain",
+    "f_historical_freq",
+    "f_soil_moisture"
+  ]
+}

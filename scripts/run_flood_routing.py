@@ -113,8 +113,8 @@ def flood_astar(G, origin_ll, dest_ll):
 
 def path_stats(G, path):
     pairs = list(zip(path[:-1], path[1:]))
-    lengths = [G[u][v][0].get('length', 0.0)     for u,v in pairs]
-    risks   = [G[u][v][0].get('flood_risk', 0.0) for u,v in pairs]
+    lengths = [min(G[u][v].values(), key=lambda e: e.get('length', float('inf'))).get('length', 0.0) for u,v in pairs]
+    risks   = [min(G[u][v].values(), key=lambda e: e.get('length', float('inf'))).get('flood_risk', 0.0) for u,v in pairs]
     return {
         'distance_km': round(sum(lengths)/1000, 2),
         'avg_risk':    round(float(np.mean(risks)), 3),

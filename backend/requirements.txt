@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+uvloop
+pydantic
+numpy
+pandas
+xgboost
+scikit-learn
+joblib
+shap
+scipy
+ultralytics
+requests
+opencv-python-headless
+Pillow
+httpx

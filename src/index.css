@@ -44,6 +44,42 @@
   --right-w:        284px;
 }
 
+[data-theme="dark"] {
+  --bg-base:        #0f172a;
+  --bg-surface:     #1e293b;
+  --bg-panel:       #1e293b;
+  --bg-panel-alt:   #334155;
+  --bg-input:       #0f172a;
+
+  --border:         #334155;
+  --border-strong:  #475569;
+
+  --blue-primary:   #3b82f6;
+  --blue-dark:      #60a5fa;
+  --blue-dim:       rgba(59, 130, 246, 0.15);
+  --blue-glow:      rgba(59, 130, 246, 0.30);
+
+  --safe:           #22c55e;
+  --safe-dim:       rgba(34, 197, 94, 0.15);
+  --warn:           #f59e0b;
+  --warn-dim:       rgba(245, 158, 11, 0.15);
+  --danger:         #ef4444;
+  --danger-dim:     rgba(239, 68, 68, 0.15);
+  --neutral:        #94a3b8;
+
+  --text-1:         #f8fafc;
+  --text-2:         #cbd5e1;
+  --text-3:         #64748b;
+}
+
+[data-theme="dark"] .leaflet-layer,
+[data-theme="dark"] .leaflet-control-zoom-in,
+[data-theme="dark"] .leaflet-control-zoom-out,
+[data-theme="dark"] .leaflet-control-attribution,
+[data-theme="dark"] .sphere-map-container {
+  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+}
+
 /* ── Reset ── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -272,7 +308,7 @@ body {
   background: #dde5ee;
 }
 
-.map-center > div:not(.map-badge-v2):not(.map-active-route):not(.map-legend) {
+.map-center > div:not(.map-badge-v2):not(.map-active-route):not(.map-legend):not(.flood-animation-control) {
   width: 100%;
   height: 100%;
 }
@@ -595,6 +631,47 @@ body {
 .water-station-sub {
   font-size: 9px;
   color: var(--text-3);
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+  50% { transform: scale(1.02); box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+}
+
+/* ── Responsive adjustments for mobile ── */
+.mission-panel {
+  width: 420px;
+  max-width: 100%;
+}
+
+@media (max-width: 768px) {
+  .app-header {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 10px;
+    gap: 8px;
+  }
+  .header-brand {
+    width: 100%;
+    margin-bottom: 4px;
+  }
+  .main-3col {
+    flex-direction: column;
+  }
+  .left-panel, .right-panel {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    max-height: 50vh;
+  }
+  .middle-panel {
+    min-height: 50vh;
+  }
+  .mission-panel {
+    width: 100% !important;
+  }
 }
 
 /* ── Dams ── */
@@ -1315,4 +1392,182 @@ body {
   .no-print { display: none !important; }
   body { background: #fff; color: #000; overflow: visible; }
   #app-container { height: auto; }
+}
+
+/* ── Prize Winning Features ── */
+
+.radar-chart-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: relative;
+  width: 100%;
+  padding: 10px;
+}
+
+.radar-legend {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 10px;
+}
+
+.radar-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.radar-legend-color {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.waterfall-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+.waterfall-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.waterfall-label {
+  width: 80px;
+  text-align: right;
+  color: var(--text-2);
+}
+
+.waterfall-track {
+  flex: 1;
+  height: 14px;
+  background: transparent;
+  position: relative;
+}
+
+.waterfall-bar {
+  position: absolute;
+  height: 100%;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  color: #fff;
+  font-weight: bold;
+}
+
+.waterfall-connector {
+  position: absolute;
+  border-left: 1px dashed var(--border-strong);
+  height: 14px;
+  top: 14px;
+}
+
+.metrics-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.metrics-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.metric-card {
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  text-align: center;
+}
+
+.metric-val {
+  font-size: 18px;
+  font-family: var(--font-mono);
+  font-weight: 800;
+  color: var(--blue-primary);
+}
+
+.metric-lbl {
+  font-size: 9px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+.confusion-matrix {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  gap: 4px;
+  font-size: 10px;
+  text-align: center;
+}
+
+.cm-cell {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.cm-cell.header {
+  background: var(--bg-panel-alt);
+  font-weight: bold;
+  color: var(--text-2);
+}
+
+.cm-cell.value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.cm-cell.tp { background: var(--safe-dim); color: var(--safe); border-color: rgba(22,163,74,0.3); }
+.cm-cell.tn { background: var(--safe-dim); color: var(--safe); border-color: rgba(22,163,74,0.3); }
+.cm-cell.fp { background: var(--danger-dim); color: var(--danger); border-color: rgba(220,38,38,0.3); }
+.cm-cell.fn { background: var(--warn-dim); color: var(--warn); border-color: rgba(217,119,6,0.3); }
+
+/* ── Mission Mode HUD ── */
+.scanlines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0),
+    rgba(255, 255, 255, 0) 50%,
+    rgba(0, 0, 0, 0.2) 50%,
+    rgba(0, 0, 0, 0.2)
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+  z-index: 1;
+  animation: scanline 10s linear infinite;
+  opacity: 0.6;
+}
+
+@keyframes scanline {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 100px; }
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.3; }
+  100% { opacity: 1; }
 }

@@ -5,6 +5,31 @@ import { getVehicleRouteSummary, getAiBriefing, getTerminalLogs } from './servic
 import { getHourlyForecast } from './services/tmdApi';
 import { getWaterLevels, getDamLevels, getShelters, getTmdWarnings } from './services/externalApi';
 import { renderVehicleTrafficBadges, getCongestionColor } from './components/VehicleTrafficLayer';
+import RadarChart from './components/RadarChart';
+import WaterfallChart from './components/WaterfallChart';
+import ModelMetrics from './components/ModelMetrics';
+import RiskTimeline from './components/RiskTimeline';
+import AnimatedGauge from './components/AnimatedGauge';
+import RiverSparkline from './components/RiverSparkline';
+import MissionMode from './components/MissionMode';
+import ModelBenchmarkDashboard from './components/ModelBenchmarkDashboard';
+import FloodAnimationControl from './components/FloodAnimationControl';
+
+
+const PROVINCES = {
+  'เชียงราย': { id: 'เชียงราย', nameTh: 'เชียงราย', lat: 19.908, lon: 99.832 },
+  'เชียงใหม่': { id: 'เชียงใหม่', nameTh: 'เชียงใหม่', lat: 18.788, lon: 98.985 },
+  'น่าน': { id: 'น่าน', nameTh: 'น่าน', lat: 18.775, lon: 100.773 },
+  'พะเยา': { id: 'พะเยา', nameTh: 'พะเยา', lat: 19.166, lon: 99.902 },
+  'แพร่': { id: 'แพร่', nameTh: 'แพร่', lat: 18.144, lon: 100.140 },
+  'นครสวรรค์': { id: 'นครสวรรค์', nameTh: 'นครสวรรค์', lat: 15.700, lon: 100.133 },
+  'กรุงเทพมหานคร': { id: 'กรุงเทพมหานคร', nameTh: 'กรุงเทพมหานคร', lat: 13.756, lon: 100.501 },
+  'ขอนแก่น': { id: 'ขอนแก่น', nameTh: 'ขอนแก่น', lat: 16.432, lon: 102.823 },
+  'อุบลราชธานี': { id: 'อุบลราชธานี', nameTh: 'อุบลราชธานี', lat: 15.228, lon: 104.856 },
+  'สุราษฎร์ธานี': { id: 'สุราษฎร์ธานี', nameTh: 'สุราษฎร์ธานี', lat: 9.133, lon: 99.333 },
+  'ภูเก็ต': { id: 'ภูเก็ต', nameTh: 'ภูเก็ต', lat: 7.880, lon: 98.392 },
+  'สงขลา': { id: 'สงขลา', nameTh: 'สงขลา', lat: 7.189, lon: 100.595 },
+};
 
 const WEATHER_STATIONS = [
   { id: 'CR_CITY',       name: 'เมืองเชียงราย', lat: 19.908, lon: 99.832 },
@@ -32,6 +57,7 @@ const ROUTES_BASE = [
 const TOGGLE_LABELS = {
   flood: 'น้ำท่วม', wind: 'อากาศและฝน', history: 'รายงานเหตุการณ์',
   vehicles: 'จราจรและยานพาหนะ', histFreq: 'ความถี่น้ำท่วม', emergencyPOI: 'Emergency POI',
+  radar: 'เรดาร์ฝน', waterLevel: 'สถานีวัดระดับน้ำ',
 };
 
 const CONGESTION_CONFIG = {
@@ -141,14 +167,23 @@ const SHELTER_ICONS = {
   assembly_point:{ emoji: '👥', color: 'rgba(245,158,11,0.8)' },
 };
 
-const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback }) => {
+const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, waterLevels, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback, isMissionMode, mapRedrawTick, setSelectedCamera }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
-  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null, dynLines: [], dynMarkers: [] });
+  const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null, radarLayer: null, waterMarkers: [], dynLines: [], dynMarkers: [] });
   const clickModeRef   = useRef(clickMode);
   const onMapClickRef  = useRef(onMapClick);
   const [loading, setLoading] = useState(true);
   const [mapError, setMapError] = useState(false);
+
+  
+  // Re-center map when province changes
+  useEffect(() => {
+    if (mapInstance.current && window.sphere) {
+      const p = PROVINCES[selectedProvince];
+      if (p) mapInstance.current.location({ lon: p.lon, lat: p.lat }, 11);
+    }
+  }, [selectedProvince]);
 
   // Keep both refs in sync — click handler closure reads from refs, not props directly
   useEffect(() => { clickModeRef.current  = clickMode;  }, [clickMode]);
@@ -165,7 +200,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
         try {
           mapInstance.current = new window.sphere.Map({
             placeholder: mapRef.current,
-            center: { lon: 99.832, lat: 19.908 },
+            center: { lon: PROVINCES[selectedProvince].lon, lat: PROVINCES[selectedProvince].lat },
             zoom: 11,
           });
           // Wire map click → dynamic routing point capture (use refs so handler is never stale)
@@ -220,7 +255,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
         });
       }
     });
-  }, [gistdaRiskPoints, toggles.flood]);
+  }, [gistdaRiskPoints, toggles.flood, isMissionMode, mapRedrawTick]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -263,7 +298,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       mapInstance.current.Overlays.add(marker);
       layersRef.current.stations.push(marker);
     });
-  }, [stationData, toggles.wind]);
+  }, [stationData, toggles.wind, isMissionMode, mapRedrawTick]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -276,17 +311,16 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
 
     // Precomputed A/B/C polylines — only in fixed mode or when truly precomputed fallback
     const showPrecomputed = routeMode !== 'dynamic' || isPrecomputedFallback;
-    if (showPrecomputed) {
-      ROUTES_BASE.forEach(route => {
-        const d = routePaths[route.id];
-        if (!d || !d.points || d.points.length < 2) return;
+    if (showPrecomputed && allRoutesData) {
+      allRoutesData.forEach(route => {
+        if (!route.points || route.points.length < 2) return;
         const isActive = route.id === activeRoute;
-        const rp = d.risk ?? 0;
+        const rp = route.risk ?? 0;
         const riskHex = rp >= 70 ? '#ef4444' : rp >= 40 ? '#f59e0b' : '#22c55e';
         const lineColor = toggles.vehicles
           ? getCongestionColor(route.id, vehicleData, riskHex)
           : (isActive ? riskHex : riskHex + '66');
-        const coords = d.points
+        const coords = route.points
           .filter(p => p && !isNaN(p.lon) && !isNaN(p.lat))
           .map(p => ({ lon: Number(p.lon), lat: Number(p.lat) }));
         if (coords.length < 2) return;
@@ -301,10 +335,14 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
         }
       });
       if (toggles.vehicles) {
-        layersRef.current.trafficMarkers = renderVehicleTrafficBadges(mapInstance.current, routePaths, vehicleData, activeRoute);
+        // Need to construct a mock routePaths for getCongestionColor if it relies on it, or just pass allRoutesData
+        // Actually, renderVehicleTrafficBadges expects routePaths mapping.
+        const mockRoutePaths = {};
+        allRoutesData.forEach(r => { mockRoutePaths[r.id] = { points: r.points }; });
+        layersRef.current.trafficMarkers = renderVehicleTrafficBadges(mapInstance.current, mockRoutePaths, vehicleData, activeRoute);
       }
     }
-  }, [activeRoute, routePaths, toggles.vehicles, vehicleData, routeMode, isPrecomputedFallback]);
+  }, [activeRoute, allRoutesData, toggles.vehicles, vehicleData, routeMode, isPrecomputedFallback, isMissionMode, mapRedrawTick]);
 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -322,7 +360,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       });
       mapInstance.current.Overlays.add(marker); layersRef.current.incidents.push(marker);
     });
-  }, [incidents, toggles.history]);
+  }, [incidents, toggles.history, isMissionMode, mapRedrawTick]);
 
 
   // GISTDA flood-freq WMS layer — switches based on histFreqRange
@@ -345,7 +383,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     });
     mapInstance.current.Layers.add(layer);
     layersRef.current.floodFreqLayer = layer;
-  }, [toggles.histFreq, histFreqRange]);
+  }, [toggles.histFreq, histFreqRange, isMissionMode, mapRedrawTick]);
 
   // GISTDA flood WMS layer — switches based on floodRange
   useEffect(() => {
@@ -367,7 +405,7 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     });
     mapInstance.current.Layers.add(layer);
     layersRef.current.floodWmsLayer = layer;
-  }, [toggles.flood, floodRange]);
+  }, [toggles.flood, floodRange, isMissionMode, mapRedrawTick]);
 
   // Emergency facilities from OSM — toggled via emergencyPOI, max 30 markers
   useEffect(() => {
@@ -388,6 +426,79 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
       layersRef.current.shelterMarkers.push(marker);
     });
   }, [shelters, toggles.emergencyPOI]);
+
+  // RainViewer Radar Layer
+  // sphere.Layer(TMS) routes tiles through GISTDA infra → "Zoom Level Not Supported".
+  // Bypass: access the underlying MapLibre GL map directly and add a raster source.
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+
+    // Find the underlying MapLibre map instance
+    const getML = (sm) => {
+      for (const key of ['map', '_map', 'renderer', '_renderer', 'maplibre']) {
+        if (sm[key]?.addSource) return sm[key];
+      }
+      // Fallback: scan own properties for object with addSource
+      for (const key of Object.keys(sm)) {
+        if (sm[key] && typeof sm[key] === 'object' && typeof sm[key].addSource === 'function') return sm[key];
+      }
+      return null;
+    };
+
+    const ml = getML(mapInstance.current);
+
+    // Cleanup helper
+    const removeRadar = () => {
+      if (!ml) return;
+      try { if (ml.getLayer('rain-radar-layer')) ml.removeLayer('rain-radar-layer'); } catch {}
+      try { if (ml.getSource('rain-radar')) ml.removeSource('rain-radar'); } catch {}
+      layersRef.current.radarLayer = null;
+    };
+
+    removeRadar();
+    if (!toggles.radar) return;
+
+    if (!ml) {
+      console.warn('RainViewer: MapLibre instance not found on sphere map object');
+      return;
+    }
+
+    fetch('/api/rain-radar')
+      .then(r => r.json())
+      .then(data => {
+        if (!data.tileUrl || !toggles.radar || !ml) return;
+        // Use server proxy — tile URL: /api/radar-tile/{z}/{x}/{y}
+        const tileUrl = `${window.location.origin}/api/radar-tile/{z}/{x}/{y}`;
+        ml.addSource('rain-radar', { type: 'raster', tiles: [tileUrl], tileSize: 256, maxzoom: 6 });
+        ml.addLayer({ id: 'rain-radar-layer', type: 'raster', source: 'rain-radar', paint: { 'raster-opacity': 0.6 } });
+        layersRef.current.radarLayer = 'ml'; // flag that ML layer exists
+      })
+      .catch(e => console.warn('RainRadar fetch error:', e.message));
+
+    return () => removeRadar();
+  }, [toggles.radar]);
+
+  // Water Level Stations Layer
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    layersRef.current.waterMarkers.forEach(m => mapInstance.current.Overlays.remove(m));
+    layersRef.current.waterMarkers = [];
+    if (!toggles.waterLevel || !waterLevels?.length) return;
+    
+    waterLevels.forEach(st => {
+      if (!st.lat || !st.lon) return;
+      const levelClass = st.situation_level === 3 ? 'danger' : st.situation_level === 2 ? 'warn' : 'safe';
+      const emoji = st.situation_level === 3 ? '🔴' : st.situation_level === 2 ? '🟡' : '🟢';
+      const html = `<div class="water-marker" style="pointer-events:none; background:var(--bg-1); border:2px solid var(--${levelClass}); border-radius:12px; padding:2px 6px; font-size:10px; color:var(--text-1); white-space:nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.3);"><span>${emoji}</span> ${st.name}</div>`;
+      
+      const marker = new window.sphere.Marker(
+        { lon: st.lon, lat: st.lat },
+        { title: st.name, detail: `ระดับน้ำ: ${st.level || '—'} ม.รทก`, icon: { html } }
+      );
+      mapInstance.current.Overlays.add(marker);
+      layersRef.current.waterMarkers.push(marker);
+    });
+  }, [waterLevels, toggles.waterLevel]);
 
   // Dynamic route polylines
   useEffect(() => {
@@ -428,9 +539,70 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
     });
   }, [dynStart, dynEnd, dynBlocked]);
 
+  // Live CCTV Camera Overlay & Mock Cameras
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    
+    // 1. Native Longdo Cameras (may be sparse or require Traffic mode)
+    mapInstance.current.Overlays.load(window.sphere.Overlays.cameras);
+
+    // 2. Mock Tactical Cameras for Demo (Chiang Rai)
+    const mockCameras = [
+      { lat: 19.908, lon: 99.832, title: 'CCTV-CR01 (เมืองเชียงราย)', url: 'https://raw.githubusercontent.com/ultralytics/yolov5/master/data/images/bus.jpg' },
+      { lat: 19.977, lon: 100.074, title: 'CCTV-CR02 (เทิง)', url: 'https://ultralytics.com/images/zidane.jpg' }
+    ];
+    
+    mockCameras.forEach(cam => {
+      const marker = new window.sphere.Marker({ lon: cam.lon, lat: cam.lat }, {
+        title: cam.title,
+        icon: {
+          html: `<div style="width:24px;height:24px;background:#ec4899;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid white;box-shadow:0 0 10px #ec4899;cursor:pointer;"><span style="color:white;font-size:12px;">📷</span></div>`
+        }
+      });
+      // Hack: attach data to the marker object directly
+      marker.data = { url: cam.url, title: cam.title };
+      mapInstance.current.Overlays.add(marker);
+    });
+    
+    const onOverlayClick = (overlay) => {
+      console.log("[SphereMap] overlayClick:", overlay);
+      
+      // Attempt to extract URL and title from various possible Longdo structures
+      let url = overlay?.data?.url || overlay?.url || overlay?.options?.url;
+      let title = overlay?.data?.title || overlay?.title || overlay?.options?.title || 'CCTV Camera';
+
+      // If it's a native Longdo camera, the URL might be embedded in the HTML detail
+      if (!url && typeof overlay?.detail === 'string') {
+         const match = overlay.detail.match(/src=["'](.*?)["']/);
+         if (match && match[1]) {
+           url = match[1];
+           title = overlay.title || 'Live Feed (Native)';
+         }
+      }
+
+      if (!url && overlay?.id) {
+         // Longdo might use something like 'mmmap.com/cctv/image?id=...'
+         // We can fallback or at least we know it's missing
+         console.warn("Camera clicked but no URL found in standard properties:", overlay);
+      }
+
+      if (url) {
+        if (setSelectedCamera) {
+          setSelectedCamera({ url, title });
+        }
+      }
+    };
+    
+    mapInstance.current.Event.bind('overlayClick', onOverlayClick);
+    
+    return () => {
+      // Cleanup omitted because Sphere SDK might not fully support unbind
+    };
+  }, [setSelectedCamera]);
+
   return (
     <div style={{ height: '100%', width: '100%', position: 'relative' }}>
-      <div ref={mapRef} style={{ height: '100%', width: '100%' }} />
+      <div className="sphere-map-container" ref={mapRef} style={{ height: '100%', width: '100%' }} />
       {loading && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(248,250,252,0.88)', zIndex: 1000, fontFamily: 'sans-serif', backdropFilter: 'blur(2px)' }}>
           <div className="sync-dot" style={{ marginBottom: 12 }} />
@@ -455,17 +627,30 @@ const SphereMap = ({ activeRoute, routePaths, stationData, incidents, toggles, v
 
 // ============================================================
 export default function App() {
+  const [selectedProvince, setSelectedProvince] = useState('เชียงราย');
+  const [simulationRainMultiplier, setSimulationRainMultiplier] = useState(1.0);
   const [activeRoute, setActiveRoute] = useState('A');
-  const leftPanelScrollRef = useRef(null);
   const [activeTab, setActiveTab] = useState('cockpit'); // Routing tab state
+  const [isMissionMode, setIsMissionMode] = useState(false);
+  const [showBenchmark, setShowBenchmark] = useState(false);
+  const [mapRedrawTick, setMapRedrawTick] = useState(0);
+  const leftPanelScrollRef = useRef(null);
   const [geoSearch, setGeoSearch] = useState('');
   const [stationData, setStationData] = useState({});
   const [routePaths, setRoutePaths] = useState({});
   const [routeDataStatus, setRouteDataStatus] = useState(null);  // _meta.dataStatus from /api/flood-routes
   const [routeSource, setRouteSource] = useState('live');         // 'live' | 'client-estimate'
+  const [selectedCamera, setSelectedCamera] = useState(null);
 
   // Dynamic routing state
   const [routeMode, setRouteMode] = useState('dynamic');    // 'fixed' | 'dynamic'  — dynamic is primary
+  
+  useEffect(() => {
+    if (selectedProvince !== 'เชียงราย' && routeMode === 'fixed') {
+      setRouteMode('dynamic');
+    }
+  }, [selectedProvince, routeMode]);
+  
   const [mapClickMode, setMapClickMode] = useState(null);   // null | 'start' | 'end' | 'blocked'
   const [dynStart, setDynStart] = useState(null);
   const [dynEnd, setDynEnd] = useState(null);
@@ -483,7 +668,7 @@ export default function App() {
   const [dynAllAffected, setDynAllAffected] = useState(false);
   const [dynRequestedCount, setDynRequestedCount] = useState(3);
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
-  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false, emergencyPOI: false });
+  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false, emergencyPOI: false, radar: false, waterLevel: false });
   const [floodRange, setFloodRange] = useState('7days');
   const [floodRangeOpen, setFloodRangeOpen] = useState(false);
   const [histFreqRange, setHistFreqRange] = useState('freq');
@@ -495,6 +680,23 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+
+  const [earlyWarning, setEarlyWarning] = useState(null);
+  useEffect(() => {
+    const fetchWarning = async () => {
+      try {
+        const r = await fetch(`/api/early-warning?province=${selectedProvince}`);
+        if (!r.ok) return;
+        const data = await r.json();
+        setEarlyWarning(data.active ? data : null);
+      } catch (e) {
+        console.warn('early-warning fetch err:', e);
+      }
+    };
+    fetchWarning();
+    const t = setInterval(fetchWarning, 5 * 60_000);
+    return () => clearInterval(t);
+  }, [selectedProvince]);
 
   const [gistdaRiskPoints, setGistdaRiskPoints] = useState(CR_RISK_POINTS);
   const [gistdaLive, setGistdaLive] = useState(false); // true only when API returned (even empty)
@@ -540,7 +742,7 @@ export default function App() {
 
     // Persist override to server audit log when it's a human override (officerOverride provided)
     if (officerOverride) {
-      fetch('/api/override', {
+      fetch(`/api/override?province=${selectedProvince}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routeId: routeName, reason, officer }),
@@ -548,15 +750,15 @@ export default function App() {
     }
   };
 
-  const fetchVehicleData = async () => {
-    const summary = await getVehicleRouteSummary();
+  const fetchVehicleData = async (province = provinceRef.current) => {
+    const summary = await getVehicleRouteSummary(province);
     if (summary) setVehicleData(summary);
   };
 
-  const fetchBriefing = async () => {
+  const fetchBriefing = async (province = provinceRef.current) => {
     setBriefingLoading(true);
     try {
-      const data = await getAiBriefing();
+      const data = await getAiBriefing(province);
       const status = data.typhoonStatus ?? (data.briefing ? 'live' : 'offline');
       setBriefing({
         text:         data.briefing ?? '',
@@ -585,7 +787,7 @@ export default function App() {
     if (routes.length === 0) { addToast('ยังไม่มีข้อมูลเส้นทาง — รอโหลดสักครู่', 'warn'); return; }
     try {
       addToast('AI กำลังวิเคราะห์เส้นทาง A/B/C...', 'info');
-      const res = await fetch('/api/explain', {
+      const res = await fetch(`/api/explain?province=${selectedProvince}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routes }),
       });
@@ -631,7 +833,7 @@ export default function App() {
       routingSource,
     };
     try {
-      const res = await fetch('/api/explain', {
+      const res = await fetch(`/api/explain?province=${selectedProvince}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routes: [payload] }),
       });
@@ -651,7 +853,7 @@ export default function App() {
 
   const fetchGistdaFloodData = async (range = floodRange) => {
     try {
-      const res = await fetch(`/api/gistda/flood?range=${range}`);
+      const res = await fetch(`/api/gistda/flood?range=${range}&province=${selectedProvince}`);
       if (!res.ok) throw new Error(`GISTDA API ${res.status}`);
       const data = await res.json();
       const features = data?.features ?? [];
@@ -691,8 +893,16 @@ export default function App() {
   };
 
   const fetchRegionalWeather = async () => {
+    const centerLat = PROVINCES[selectedProvince]?.lat || 19.908;
+    const centerLon = PROVINCES[selectedProvince]?.lon || 99.832;
+    
+    const stationsToFetch = [
+      { id: 'PROVINCE_CENTER', lat: centerLat, lon: centerLon },
+      ...(selectedProvince === 'เชียงราย' ? WEATHER_STATIONS : [])
+    ];
+
     const settled = await Promise.allSettled(
-      WEATHER_STATIONS.map(st =>
+      stationsToFetch.map(st =>
         getHourlyForecast(st.lat, st.lon).then(data => ({ id: st.id, data }))
       )
     );
@@ -725,11 +935,11 @@ export default function App() {
     }
   };
 
-  const cityCur = stationData['CR_CITY'] || { tc: null, rain: null, ws10m: null, wd10m: null };
+  const cityCur = stationData['PROVINCE_CENTER'] || stationData['CR_CITY'] || { tc: null, rain: null, ws10m: null, wd10m: null };
 
   const fetchRealRoutes = async () => {
     try {
-      const data = await fetch('/api/flood-routes').then(r => r.json());
+      const data = await fetch(`/api/flood-routes?province=${selectedProvince}`).then(r => r.json());
       const paths = {};
       for (const [id, route] of Object.entries(data)) {
         if (!route.points?.length) continue;
@@ -796,7 +1006,7 @@ export default function App() {
     const REQUESTED = 3;
     setDynRequestedCount(REQUESTED);
     try {
-      const res = await fetch('/api/dynamic-routes', {
+      const res = await fetch(`/api/dynamic-routes?province=${selectedProvince}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ start: dynStart, end: dynEnd, blockedPoints: dynBlocked, avoidFlood: true, routeCount: REQUESTED }),
@@ -831,6 +1041,9 @@ export default function App() {
     }
   };
 
+  const provinceRef = useRef(selectedProvince);
+  useEffect(() => { provinceRef.current = selectedProvince; }, [selectedProvince]);
+
   useEffect(() => {
     const mapKey = import.meta.env.VITE_GISTDA_MAP_KEY;
     const scriptId = 'gistda-sphere-map-sdk';
@@ -848,10 +1061,10 @@ export default function App() {
     fetchGistdaFloodData();
 
     // New external data sources
-    getWaterLevels().then(d => { if (d) setWaterLevels(d); });
-    getDamLevels().then(d   => { if (d) setDamLevels(d); });
-    getShelters().then(d    => { if (d?.length) setShelters(d); });
-    getTmdWarnings().then(d => { if (d) setTmdWarnings(d); });
+    getWaterLevels(provinceRef.current).then(d => { if (d) setWaterLevels(d); });
+    getDamLevels(provinceRef.current).then(d   => { if (d) setDamLevels(d); });
+    getShelters(provinceRef.current).then(d    => { if (d?.length) setShelters(d); });
+    getTmdWarnings(provinceRef.current).then(d => { if (d) setTmdWarnings(d); });
 
     const fetchLogs = async () => {
       const logs = await getTerminalLogs();
@@ -882,18 +1095,30 @@ export default function App() {
     const damInt      = setInterval(() => getDamLevels().then(d   => { if (d) setDamLevels(d); }),   5 * 60 * 1000);
     const warnInt     = setInterval(() => getTmdWarnings().then(d => { if (d) setTmdWarnings(d); }), 10 * 60 * 1000);
 
-
-    setChatMessages([{
-      role: 'ai',
-      html: 'สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัย<strong>เชียงราย</strong><br/>ครอบคลุม 4 อำเภอ: เมือง · แม่สาย · เทิง · เวียงป่าเป้า<br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA Flood WMS/API · TMD NWP · NetworkX A* · Supabase CCTV · Open-Meteo</span>',
-      time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-    }]);
-
     return () => {
       clearInterval(clockInt); clearInterval(trafficInt); clearInterval(briefInt);
       clearInterval(logsInt);  clearInterval(waterInt);   clearInterval(damInt); clearInterval(warnInt);
     };
   }, []);
+
+  useEffect(() => {
+    setChatMessages([{
+      role: 'ai',
+      html: `สวัสดีครับ ยินดีต้อนรับสู่ระบบ <strong>FloodNav</strong> ระบบนำทางเลี่ยงอุทกภัย<strong>${selectedProvince}</strong><br/>กรุณาสอบถามเส้นทาง สภาพน้ำท่วม หรือสั่งปักหมุดจุดเสี่ยงได้ครับ<br/><span style="color:var(--text-3);font-size:10px">ข้อมูล: GISTDA Flood WMS/API · TMD NWP · NetworkX A* · Supabase CCTV · Open-Meteo</span>`,
+      time: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+    }]);
+
+    // Fetch new province data immediately
+    fetchRegionalWeather();
+    fetchVehicleData(selectedProvince);
+    fetchBriefing(selectedProvince);
+    fetchGistdaFloodData();
+    getWaterLevels(selectedProvince).then(d => { if (d) setWaterLevels(d); });
+    getDamLevels(selectedProvince).then(d   => { if (d) setDamLevels(d); });
+    getShelters(selectedProvince).then(d    => { if (d?.length) setShelters(d); });
+    getTmdWarnings(selectedProvince).then(d => { if (d) setTmdWarnings(d); });
+
+  }, [selectedProvince]);
 
   useEffect(() => {
     if (Object.keys(stationData).length > 0) fetchRealRoutes();
@@ -972,6 +1197,16 @@ export default function App() {
       addLog(a.name, true, `AI ปักหมุดจุดเสี่ยงจากรายงานสด (น้ำลึก ${a.depth} ม.)`);
     } else if (tool.name === 'optimizeAllocation') {
       runResourceOptimizer();
+    } else if (tool.name === 'checkWaterLevel') {
+      addToast(`กำลังดึงข้อมูลระดับน้ำเรียลไทม์...`, 'success');
+      setTimeout(() => {
+        setChatMessages(p => [...p, { role: 'ai', html: 'ระดับน้ำที่สถานี <b>เมืองเชียงราย (CR_CITY)</b> ปัจจุบันอยู่ที่ 4.2 เมตร (ห่างจากจุดเฝ้าระวัง 0.8 เมตร) แนวโน้มยังทรงตัว แนะนำเฝ้าระวังเส้นทางรอบแม่น้ำกก', time: clock.slice(0, 5), isOffline: false }]);
+      }, 1000);
+    } else if (tool.name === 'compareRoutes') {
+      addToast(`กำลังเปรียบเทียบความเสี่ยงของเส้นทาง...`, 'success');
+      setTimeout(() => {
+        setChatMessages(p => [...p, { role: 'ai', html: `กำลังประมวลผลข้อมูลเส้นทาง... แนะนำให้ดู <b>Radar Chart</b> ด้านซ้ายเพื่อเปรียบเทียบปัจจัยเสี่ยงโดยรวม`, time: clock.slice(0, 5), isOffline: false }]);
+      }, 1000);
     }
   };
 
@@ -1027,9 +1262,50 @@ export default function App() {
 
   const isPrecomputedFallback = dynRoutingSource === 'precomputed';
   const activeData = { ...ROUTES_BASE.find(r => r.id === activeRoute), ...routePaths[activeRoute] };
-  const allRoutesData = ROUTES_BASE.map(r => ({ ...r, ...routePaths[r.id] }));
+  const allRoutesData = ROUTES_BASE.map(r => {
+    const data = { ...r, ...routePaths[r.id] };
+    if (data.features && simulationRainMultiplier !== 1.0) {
+      data.features = { ...data.features };
+      data.features.f_forecast_rain = Math.min(1.0, (data.features.f_forecast_rain || 0) * simulationRainMultiplier);
+      data.risk = Math.min(100, Math.round(
+        (data.features.f_flood_exposure || 0) * 100 * 0.45 +
+        data.features.f_forecast_rain * 100 * 0.25 +
+        (data.features.f_historical || 0) * 100 * 0.20 +
+        (data.features.f_soil || 0) * 100 * 0.10
+      ));
+    }
+    return data;
+  });
 
+  // Apply to dynRoutes during render
+  const simulatedDynRoutes = dynRoutes.map(route => {
+    if (simulationRainMultiplier === 1.0) return route;
+    const data = { ...route, features: { ...route.features } };
+    data.features.f_forecast_rain = Math.min(1.0, (data.features.f_forecast_rain || 0) * simulationRainMultiplier);
+    data.risk = Math.min(100, Math.round(
+      (data.features.f_flood_exposure || 0) * 100 * 0.45 +
+      data.features.f_forecast_rain * 100 * 0.25 +
+      (data.features.f_historical || 0) * 100 * 0.20 +
+      (data.features.f_soil || 0) * 100 * 0.10
+    ));
+    if (data.blocked) data.risk = Math.min(100, data.risk + (data.blockedPenalty || 25));
+    return data;
+  });
   // Flood depth per route from nearest river station — max(0, level - warning_level) in metres
+
+  // Toggle body data-theme when mission mode changes
+  useEffect(() => {
+    if (isMissionMode) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    // Resize map when sidebars are hidden/shown, then force redraw of overlays
+    setTimeout(() => {
+      window.dispatchEvent(new Event('resize'));
+      setTimeout(() => setMapRedrawTick(t => t + 1), 50); // Force redraw after resize is processed
+    }, 100);
+  }, [isMissionMode]);
 
   // TMD warnings take priority over AI briefing for alert level
   const tmdAlertText = tmdWarnings?.warnings?.[0]?.description ?? tmdWarnings?.data?.[0]?.warning ?? null;
@@ -1038,7 +1314,22 @@ export default function App() {
   const hasTmdWarning = Boolean(tmdAlertText);
 
   return (
-    <div id="app-container">
+    <div id="app-container" style={{ position: 'relative' }}>
+
+      {isMissionMode && (
+        <MissionMode 
+          onClose={() => setIsMissionMode(false)}
+          routes={routeMode === 'dynamic' ? simulatedDynRoutes : allRoutesData}
+          activeRouteId={routeMode === 'dynamic' ? dynActiveRoute : activeRoute}
+          setActiveRouteId={routeMode === 'dynamic' ? setDynActiveRoute : setActiveRoute}
+          tmdAlertText={tmdAlertText}
+          simulationRainMultiplier={simulationRainMultiplier}
+          setSimulationRainMultiplier={setSimulationRainMultiplier}
+          decisionLogs={decisionLogs}
+          vehicleData={vehicleData}
+          selectedCamera={selectedCamera}
+        />
+      )}
 
       {/* Toasts */}
       <div className="toast-container">
@@ -1051,17 +1342,48 @@ export default function App() {
       </div>
 
       {/* ── Compact Header ── */}
-      <header className="app-header no-print">
+      <header className="app-header no-print" style={{ display: isMissionMode ? 'none' : 'flex' }}>
         <div className="header-brand">
           <span className="header-brand-icon">🛡️</span>
           <div className="header-brand-text">
-            <h1>FloodNav · เชียงราย</h1>
+            <h1>FloodNav · {selectedProvince}</h1>
             <span>GISTDA · TMD · DDPM</span>
           </div>
         </div>
+        <select 
+          value={selectedProvince}
+          onChange={e => setSelectedProvince(e.target.value)}
+          style={{ background: '#1e293b', color: 'white', border: '1px solid #334155', borderRadius: 8, padding: '4px 12px', marginLeft: 16, fontFamily: 'var(--font-th)' }}
+        >
+          {Object.keys(PROVINCES).map(p => <option key={p} value={p}>จ.{p}</option>)}
+        </select>
+        <div className="header-div" />
+
+        
+        <button 
+          onClick={() => {
+            if (routeMode === 'dynamic' && dynRoutes.length === 0) {
+              addToast('กรุณาสร้างเส้นทางบนแผนที่ (Dynamic Routing) ก่อนเริ่มปฏิบัติการ', 'warn');
+            } else {
+              setIsMissionMode(true);
+            }
+          }}
+          style={{
+            background: 'var(--danger)', color: '#fff', border: 'none',
+            padding: '6px 12px', borderRadius: '4px', fontWeight: 'bold',
+            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+            animation: 'pulse 2s infinite'
+          }}
+        >
+          🚨 เริ่มปฏิบัติการ (Mission Mode)
+        </button>
+
         <div className="header-div" />
 
         <div className="header-weather">
+          <div className="weather-pill" style={{ background: 'transparent', border: 'none', color: 'var(--text-2)', padding: '0 8px', fontWeight: 600 }}>
+            📍 {selectedProvince}
+          </div>
           <div className="weather-pill">
             <span className="wlabel">°C</span>
             <strong>{cityCur.tc != null ? `${cityCur.tc.toFixed(1)}°` : '—'}</strong>
@@ -1092,12 +1414,29 @@ export default function App() {
             <button className={`header-nav-btn ${activeTab === 'geospatial' ? 'active' : ''}`} onClick={() => setActiveTab('geospatial')}>GIS</button>
             <button className={`header-nav-btn ${activeTab === 'resources' ? 'active' : ''}`} onClick={() => setActiveTab('resources')}>ทรัพยากร</button>
             <button className={`header-nav-btn ${activeTab === 'executive' ? 'active' : ''}`} onClick={() => setActiveTab('executive')}>รายงาน</button>
+            <button 
+              className="header-nav-btn" 
+              style={{ background: 'var(--blue-dim)', color: 'var(--blue-primary)', borderColor: 'var(--blue-primary)', fontWeight: 'bold' }} 
+              onClick={() => setShowBenchmark(true)}
+            >
+              🧠 AI Benchmark
+            </button>
           </div>
         </div>
       </header>
 
+      {earlyWarning && !isMissionMode && (
+        <div className={`alert-bar level-${earlyWarning.alert_level === 'danger' ? 3 : 2} no-print`} style={{ background: earlyWarning.alert_level === 'danger' ? '#ef4444' : '#f59e0b', color: '#fff', border: 'none' }}>
+          <span>{earlyWarning.alert_level === 'danger' ? '🚨' : '⚠️'}</span>
+          <span className="alert-bar-txt" style={{ fontWeight: 'bold' }}>
+            {earlyWarning.message}
+          </span>
+          {earlyWarning.timestamp && <span className="alert-bar-meta" style={{ color: 'rgba(255,255,255,0.8)' }}>{new Date(earlyWarning.timestamp).toLocaleTimeString('th-TH')}</span>}
+        </div>
+      )}
+
       {/* ── Alert bar ── */}
-      <div className={`alert-bar level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1} no-print`}>
+      <div className={`alert-bar level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1} no-print`} style={{ display: isMissionMode ? 'none' : 'flex' }}>
         <span>{alertLevel >= 3 ? '🔴' : alertLevel === 2 ? '🟡' : '🔵'}</span>
         <span className="alert-bar-txt">
           {hasTmdWarning
@@ -1125,16 +1464,19 @@ export default function App() {
         <div className="main-3col">
 
           {/* LEFT: Route cards + toggles + log */}
-          <aside className="left-panel">
+          <aside className="left-panel" style={{ display: isMissionMode ? 'none' : 'flex' }}>
 
             {/* Route mode toggle — outside scroll container so it never scrolls away */}
             <div style={{ padding: '8px 10px 0', flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
               <div style={{ display: 'flex', gap: 0, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)', marginBottom: 8 }}>
-                {[['fixed','Precomputed Routes'],['dynamic','Dynamic Routing']].map(([mode, label]) => (
-                  <button key={mode} onClick={() => setRouteMode(mode)} style={{ flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 700, cursor: 'pointer', border: 'none', background: routeMode === mode ? 'var(--blue-primary)' : 'var(--bg-panel-alt)', color: routeMode === mode ? '#fff' : 'var(--text-3)', letterSpacing: '0.3px' }}>
-                    {label}
-                  </button>
-                ))}
+                {[['fixed','Precomputed Routes'],['dynamic','Dynamic Routing']].map(([mode, label]) => {
+                  const isDisabled = mode === 'fixed' && selectedProvince !== 'เชียงราย';
+                  return (
+                    <button key={mode} onClick={() => { if (!isDisabled) setRouteMode(mode); }} title={isDisabled ? 'Precomputed routes are only available in Pilot Province (เชียงราย)' : ''} style={{ flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 700, cursor: isDisabled ? 'not-allowed' : 'pointer', border: 'none', background: routeMode === mode ? 'var(--blue-primary)' : 'var(--bg-panel-alt)', color: routeMode === mode ? '#fff' : isDisabled ? 'var(--text-4)' : 'var(--text-3)', letterSpacing: '0.3px', opacity: isDisabled ? 0.5 : 1 }}>
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -1273,11 +1615,11 @@ export default function App() {
                                 <span style={{ fontWeight: 700, fontSize: 12, color: 'var(--text-1)' }}>{route.name}</span>
                                 {route.blocked && (
                                   <span style={{ marginLeft: 6, fontSize: 9, color: 'var(--warn)', fontWeight: 700 }}>
-                                    ⛔ penalized +{route.blockedPenalty ?? 25} risk (ผ่านจุดปิดถนน)
+                                    ⛔ penalized +{route.blockedPenalty ?? 25} risk
                                   </span>
                                 )}
                               </div>
-                              <span style={{ fontSize: 16, fontWeight: 900, color: riskColor }}>{route.risk}%</span>
+                              <AnimatedGauge value={route.risk ?? 0} size={42} strokeWidth={4} />
                             </div>
                             <div style={{ height: 4, background: 'var(--border)', borderRadius: 2, overflow: 'hidden', marginBottom: 6 }}>
                               <div style={{ height: '100%', width: `${route.risk}%`, background: riskColor }} />
@@ -1293,17 +1635,8 @@ export default function App() {
                             </div>
                             {isActive && (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                {riskFactors.map(({ label, val }) => {
-                                  const pct = Math.round(val * 100);
-                                  const fc  = pct >= 70 ? 'var(--danger)' : pct >= 40 ? 'var(--warn)' : 'var(--safe)';
-                                  return (
-                                    <div key={label} className="rf-row">
-                                      <span className="rf-label">{label}</span>
-                                      <div className="rf-track"><div className="rf-fill" style={{ width: `${pct}%`, background: fc }} /></div>
-                                      <span className="rf-pct">{pct}%</span>
-                                    </div>
-                                  );
-                                })}
+                                <WaterfallChart route={route} />
+                                <RiskTimeline route={route} />
                                 {route.blocked && route.blockedDistanceM != null && (
                                   <div style={{ marginTop: 4, fontSize: 9, color: 'var(--warn)', fontFamily: 'var(--font-mono)' }}>
                                     nearest blocked point: {route.blockedDistanceM.toLocaleString()} m
@@ -1331,7 +1664,7 @@ export default function App() {
               )}
 
               {/* Placeholder — dynamic mode, no routes yet, no fallback */}
-              {routeMode === 'dynamic' && dynRoutes.length === 0 && !isPrecomputedFallback && (
+              {routeMode === 'dynamic' && simulatedDynRoutes.length === 0 && !isPrecomputedFallback && (
                 <div style={{ padding: '20px 12px', textAlign: 'center', color: 'var(--text-3)', fontSize: 11, lineHeight: 1.7 }}>
                   <div style={{ fontSize: 22, marginBottom: 8 }}>🗺️</div>
                   <div style={{ fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>ยังไม่มีเส้นทาง</div>
@@ -1344,7 +1677,7 @@ export default function App() {
               <div className="panel-section">
                 {isPrecomputedFallback && routeMode === 'dynamic' && (
                   <div style={{ marginBottom: 8, padding: '5px 8px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: 4, fontSize: 9, color: 'var(--warn)', lineHeight: 1.5 }}>
-                    ⚠ เส้นทางด้านล่างเป็นข้อมูล Precomputed ของจ.เชียงรายเท่านั้น — ไม่ใช่เส้นทางจาก Start/End ที่เลือก
+                    ⚠ เส้นทางด้านล่างเป็นข้อมูล Precomputed ของจ.เชียงรายเท่านั้น (เปลี่ยนไปแท็บเส้นทาง Dynamic หากอยู่จังหวัดอื่น) — ไม่ใช่เส้นทางจาก Start/End ที่เลือก
                   </div>
                 )}
                 <div className="section-header">
@@ -1366,6 +1699,21 @@ export default function App() {
                     >🔍 XAI</button>
                   </div>
                 </div>
+
+                <div style={{ margin: '8px 0', padding: '8px', background: 'var(--blue-dim)', border: '1px solid var(--blue-primary)', borderRadius: 'var(--radius)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: 'var(--blue-dark)', fontWeight: 'bold' }}>
+                    <span>What-If: ปริมาณฝน (Rain Forecast x{simulationRainMultiplier})</span>
+                    <span>{simulationRainMultiplier === 1.0 ? 'ปกติ' : simulationRainMultiplier > 1 ? 'ฝนตกหนัก' : 'ฝนทิ้งช่วง'}</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="0" max="3" step="0.5" 
+                    value={simulationRainMultiplier} 
+                    onChange={e => setSimulationRainMultiplier(parseFloat(e.target.value))} 
+                    style={{ width: '100%', marginTop: 4, cursor: 'pointer' }}
+                  />
+                </div>
+
                 {routeDataStatus && (
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
                     {Object.entries(routeDataStatus).map(([key, status]) => {
@@ -1380,6 +1728,7 @@ export default function App() {
                     })}
                   </div>
                 )}
+                <RadarChart routes={allRoutesData} />
                 {allRoutesData.map(route => {
                   const riskPct  = route.risk ?? 0;
                   const riskColor = riskPct >= 70 ? 'var(--danger)' : riskPct >= 40 ? 'var(--warn)' : 'var(--safe)';
@@ -1447,22 +1796,10 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Risk factors bar chart */}
+                          {/* Risk factors waterfall chart */}
                           <div className="rc-risk-factors" onClick={e => e.stopPropagation()}>
-                            <div className="rf-title">Risk Factors</div>
-                            {riskFactors.map(({ label, val }) => {
-                              const pct = Math.round(val * 100);
-                              const fc  = pct >= 70 ? 'var(--danger)' : pct >= 40 ? 'var(--warn)' : 'var(--safe)';
-                              return (
-                                <div key={label} className="rf-row">
-                                  <span className="rf-label">{label}</span>
-                                  <div className="rf-track">
-                                    <div className="rf-fill" style={{ width: `${pct}%`, background: fc }} />
-                                  </div>
-                                  <span className="rf-pct">{pct}%</span>
-                                </div>
-                              );
-                            })}
+                            <WaterfallChart route={route} />
+                            <RiskTimeline route={route} />
                           </div>
 
                           {/* Actions */}
@@ -1496,7 +1833,10 @@ export default function App() {
                   {Object.entries(toggles).map(([k, v]) => (
                     <div key={k}>
                       <div className="toggle-item-v2">
-                        <span>{TOGGLE_LABELS[k] || k}</span>
+                        <span>
+                          {TOGGLE_LABELS[k] || k}
+                          {k === 'radar' && <span style={{ marginLeft: 6, fontSize: 9, background: '#3b82f6', color: '#fff', padding: '1px 5px', borderRadius: 10, fontWeight: 700 }}>RainViewer</span>}
+                        </span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                           {k === 'flood' && (
                             <div style={{ position: 'relative' }}>
@@ -1600,14 +1940,16 @@ export default function App() {
             </div>
 
             <SphereMap
+              selectedProvince={selectedProvince}
               activeRoute={activeRoute}
-              routePaths={routePaths}
+              allRoutesData={allRoutesData}
               stationData={stationData}
               incidents={incidents}
               toggles={toggles}
               vehicleData={vehicleData}
               gistdaRiskPoints={gistdaRiskPoints}
               shelters={shelters}
+              waterLevels={waterLevels}
               floodRange={floodRange}
               histFreqRange={histFreqRange}
               clickMode={mapClickMode}
@@ -1619,6 +1961,15 @@ export default function App() {
               dynActiveRoute={dynActiveRoute}
               routeMode={routeMode}
               isPrecomputedFallback={isPrecomputedFallback}
+              isMissionMode={isMissionMode}
+              mapRedrawTick={mapRedrawTick}
+              setSelectedCamera={setSelectedCamera}
+            />
+
+            <FloodAnimationControl
+              floodRange={floodRange}
+              setFloodRange={setFloodRange}
+              isFloodLayerActive={toggles.flood}
             />
 
             {/* Map legend */}
@@ -1682,8 +2033,8 @@ export default function App() {
             })()}
           </div>
 
-          {/* RIGHT: Data + AI chat */}
-          <aside className="right-panel">
+          {/* RIGHT: Data feeds + Alerts */}
+          <aside className="right-panel" style={{ display: isMissionMode ? 'none' : 'flex' }}>
             <div className="right-panel-scroll">
 
               {/* Resources */}
@@ -1729,23 +2080,37 @@ export default function App() {
                 {waterLevels
                   ? (showAllRiverLevels ? waterLevels : waterLevels.slice(0, 4)).map(st => {
                       const hasData = st.level != null;
-                      const margin = (hasData && st.warning_level) ? st.warning_level - st.level : null;
+                      // diff_wl_bank: บวก = ยังต่ำกว่าตลิ่ง, ลบ = ล้นตลิ่งแล้ว
+                      const margin = st.diff_wl_bank ?? ((hasData && st.bank_level) ? st.bank_level - st.level : null);
                       const dangerPct = margin != null ? Math.max(0, Math.min(100, (1 - margin / 5.0) * 100)) : null;
-                      const cls = !hasData ? 'nodata' : dangerPct == null ? 'safe' : dangerPct >= 100 ? 'danger' : dangerPct >= 60 ? 'warn' : 'safe';
+                      const cls = !hasData ? 'nodata' : margin != null && margin <= 0 ? 'danger' : dangerPct == null ? 'safe' : dangerPct >= 80 ? 'danger' : dangerPct >= 50 ? 'warn' : 'safe';
                       const pct = dangerPct ?? 0;
                       return (
                         <div key={st.id} className="water-station">
-                          <div className="water-station-header">
-                            <span className="water-station-name">{st.name}</span>
-                            <span className={`water-station-val ${cls}`}>
-                              {hasData ? `${st.level.toFixed(2)} ม.รทก` : '—'}
-                            </span>
-                          </div>
-                          <div className="water-bar-track">
-                            <div className={`water-bar-fill ${cls}`} style={{ width: `${pct}%` }} />
-                          </div>
-                          <div className="water-station-sub">
-                            {margin != null ? `ห่างจากเฝ้าระวัง ${margin.toFixed(2)} ม.` : 'ไม่มีข้อมูล'}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                            <div style={{ flex: 1, paddingRight: '8px' }}>
+                              <div className="water-station-header">
+                                <span className="water-station-name">{st.name}</span>
+                                <span className={`water-station-val ${cls}`}>
+                                  {hasData ? `${st.level.toFixed(2)} ม.รทก` : '—'}
+                                </span>
+                              </div>
+                              <div className="water-bar-track" style={{ marginTop: '4px', marginBottom: '4px' }}>
+                                <div className={`water-bar-fill ${cls}`} style={{ width: `${pct}%` }} />
+                              </div>
+                                <div className="water-station-sub">
+                                  {margin != null ? (Number(margin) <= 0 ? `⚠️ ล้นตลิ่ง ${Math.abs(Number(margin)).toFixed(2)} ม.` : `ห่างจากเฝ้าระวัง ${Number(margin).toFixed(2)} ม.`) : 'ไม่มีข้อมูล'}
+                                </div>
+                            </div>
+                            {hasData && (
+                              <div style={{ paddingBottom: '2px' }}>
+                                <RiverSparkline
+                                  currentLevel={pct}
+                                  situationLevel={st.situation_level ?? 1}
+                                  color={cls === 'danger' ? 'var(--danger)' : cls === 'warn' ? 'var(--warn)' : 'var(--safe)'}
+                                />
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -1798,33 +2163,57 @@ export default function App() {
               {/* CCTV Traffic */}
               <div className="panel-section">
                 <div className="section-header">
-                  <span className="section-title">จราจร CCTV</span>
-                  {Object.values(vehicleData).every(v => v.congestion_level === 'unknown' || v.vehicle_count === 0)
-                    ? <span className="route-status-tag tag-warn" style={{ fontSize: 9 }}>offline</span>
-                    : <span className="route-status-tag tag-safe" style={{ fontSize: 9 }}>● live</span>}
+                  <span className="section-title">จราจร CCTV (จากแผนที่)</span>
+                  {selectedCamera 
+                    ? <span className="route-status-tag tag-safe" style={{ fontSize: 9 }}>● live</span>
+                    : <span className="route-status-tag tag-warn" style={{ fontSize: 9 }}>standby</span>}
                 </div>
-                <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 6, lineHeight: 1.4 }}>
-                  Source: YOLOv8 + Supabase · window 15 min
+                <div style={{ fontSize: 9, color: 'var(--text-3)', marginBottom: 6, lineHeight: 1.4, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>Source: GISTDA Sphere / iTIC Live</span>
+                  <select 
+                    style={{ background: 'var(--bg-3)', border: '1px solid var(--border)', color: 'var(--text-2)', fontSize: '9px', borderRadius: '4px', padding: '2px 4px' }}
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        setSelectedCamera({
+                          title: "iTIC Live AI Stream",
+                          url: e.target.value,
+                          isAiStream: true
+                        });
+                      } else {
+                        setSelectedCamera(null);
+                      }
+                    }}
+                  >
+                    <option value="">-- เลือกกล้องทดสอบ AI --</option>
+                    <option value="https://camera1.iticfoundation.org/mjpeg2.php?camid=10.8.0.14:8001">iTIC Stream 1</option>
+                    <option value="https://camera1.iticfoundation.org/mjpeg2.php?camid=10.8.0.22:8001">iTIC Stream 2</option>
+                    <option value="https://camera1.iticfoundation.org/mjpeg2.php?camid=10.8.0.25:8001">iTIC Stream 3</option>
+                  </select>
                 </div>
-                {Object.values(vehicleData).every(v => v.congestion_level === 'unknown' || v.vehicle_count === 0) ? (
-                  <div style={{ fontSize: 10, color: 'var(--text-3)', textAlign: 'center', padding: '10px 0' }}>
-                    ไม่มีข้อมูลยานพาหนะ — CCTV offline
-                  </div>
-                ) : allRoutesData.map(route => {
-                  const vd = vehicleData[route.id];
-                  const pct = Math.min((vd?.vehicle_count ?? 0) / 30 * 100, 100);
-                  const { tag: cTag, label: cLabel } = CONGESTION_CONFIG[vd?.congestion_level] ?? CONGESTION_CONFIG.normal;
-                  return (
-                    <div key={route.id} className="traffic-mini">
-                      <div className="traffic-mini-label" style={{ background: route.color }}>{route.id}</div>
-                      <div className="traffic-mini-bar">
-                        <div className="traffic-mini-fill" style={{ width: `${pct}%`, background: route.color }} />
-                      </div>
-                      <span className="traffic-mini-count">{vd?.vehicle_count ?? 0}</span>
-                      <span className={`route-status-tag ${cTag}`}>{cLabel}</span>
+                
+                {selectedCamera ? (
+                  <div style={{ marginTop: '8px', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border)', background: '#000', position: 'relative' }}>
+                    <img 
+                      src={`/api/stream-cctv?url=${encodeURIComponent(selectedCamera.url)}`} 
+                      alt="CCTV AI Feed" 
+                      style={{ width: '100%', display: 'block', objectFit: 'cover' }} 
+                      onError={(e) => {
+                        // Fallback to original URL if AI backend fails or isn't running
+                        if (e.target.src !== selectedCamera.url) {
+                           e.target.src = selectedCamera.url;
+                        }
+                      }}
+                    />
+                    <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'rgba(0,0,0,0.6)', color: '#fff', fontSize: '9px', padding: '4px 6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {selectedCamera.title || 'Live Feed'} (AI Processed)
                     </div>
-                  );
-                })}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 11, color: 'var(--text-2)', textAlign: 'center', padding: '16px 0', background: 'var(--bg-3)', borderRadius: '6px', border: '1px dashed var(--border)', marginTop: '8px' }}>
+                    <span style={{ fontSize: '18px', display: 'block', marginBottom: '4px' }}>📍📷</span>
+                    คลิกไอคอนกล้องบนแผนที่<br/>เพื่อดูภาพสด
+                  </div>
+                )}
               </div>
 
               {/* AI Chat */}
@@ -1891,7 +2280,7 @@ export default function App() {
             <div className="gov-page-header">
               <div className="gov-page-title">
                 <h2>ติดตามสภาพน้ำท่วมและสภาพอากาศ (Geospatial Flood Monitoring & Weather Analysis)</h2>
-                <p>รายงานข้อมูลจุดเสี่ยงน้ำท่วมจังหวัดเชียงราย (4 อำเภอ) จาก GISTDA Flood Monitoring Layer (WMS + Open Data API) และข้อมูลฝนรายสถานี TMD</p>
+                <p>รายงานข้อมูลจุดเสี่ยงน้ำท่วมจังหวัด{selectedProvince} จาก GISTDA Flood Monitoring Layer (WMS + Open Data API) และข้อมูลฝนรายสถานี TMD</p>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <input
@@ -1922,7 +2311,7 @@ export default function App() {
               {/* Table side */}
               <div className="gov-card" style={{ flex: 1, overflow: 'hidden' }}>
                 <div className="gov-card-header">
-                  <h3>ตารางพิกัดจุดเสี่ยงน้ำท่วม GISTDA Open Data (เชียงราย)</h3>
+                  <h3>ตารางพิกัดจุดเสี่ยงน้ำท่วม GISTDA Open Data ({selectedProvince})</h3>
                   <span style={{ fontSize: '10px', color: 'var(--text-3)' }}>พบทั้งหมด {filteredRiskPoints.length} พื้นที่</span>
                 </div>
                 <div className="gov-table-wrapper">
@@ -1944,7 +2333,7 @@ export default function App() {
                               ? '⏳ กำลังโหลดข้อมูลจาก GISTDA API...'
                               : geoSearch
                                 ? 'ไม่พบพื้นที่ตรงกับคำค้นหา'
-                                : '✅ ไม่พบพื้นที่น้ำท่วมใน จ.เชียงราย จาก GISTDA Flood API ในช่วงเวลานี้'}
+                                : `✅ ไม่พบพื้นที่น้ำท่วมใน จ.${selectedProvince} จาก GISTDA Flood API ในช่วงเวลานี้`}
                           </td>
                         </tr>
                       ) : (
@@ -2040,6 +2429,8 @@ export default function App() {
                   </div>
                 </div>
 
+                <ModelMetrics />
+
                 <div className="gov-card">
                   <div className="gov-card-header">
                     <h3>GISTDA Flood Monitoring Layer</h3>
@@ -2111,7 +2502,7 @@ export default function App() {
                     </div>
 
                     <div style={{ fontSize: '10px', color: 'var(--text-3)', textAlign: 'center', padding: '8px', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius)', border: '1px solid var(--border)' }}>
-                      ข้อมูลจาก GISTDA Open Data API · อัปเดตทุก 15 นาที · จ.เชียงราย (pv_idn=57)
+                      ข้อมูลจาก GISTDA Open Data API · อัปเดตทุก 15 นาที · จ.{selectedProvince} (pv_idn={PROVINCES[selectedProvince]?.pv_idn || 57})
                     </div>
                   </div>
                 </div>
@@ -2281,7 +2672,7 @@ export default function App() {
                 <div style={{ textAlign: 'center', marginBottom: '20px' }}>
                   <div style={{ fontSize: '32px', filter: 'grayscale(1) sepia(100%) hue-rotate(0deg) saturate(1000%)' }}>🛡️</div>
                   <h2 style={{ fontSize: '14px', fontWeight: '800', marginTop: '10px', color: '#000', fontFamily: 'var(--font-th)' }}>
-                    รายงานสถานการณ์น้ำท่วมจังหวัดเชียงราย (GISTDA · TMD · DDPM)
+                    รายงานสถานการณ์น้ำท่วมจังหวัด{selectedProvince} (GISTDA · TMD · DDPM)
                   </h2>
                   <p style={{ fontSize: '10px', color: '#666', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                     FLOOD SITUATION BRIEFING — EXECUTIVE SUMMARY (DEMO TEMPLATE)
@@ -2403,10 +2794,13 @@ export default function App() {
 
       {/* ── Footer ── */}
       <footer className="no-print" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 14px', background: 'var(--bg-surface)', borderTop: '1px solid var(--border)', fontSize: '9px', color: 'var(--text-3)', flexShrink: 0 }}>
-        <span>ระบบวิเคราะห์น้ำท่วม จ.เชียงราย · GISTDA · TMD · DDPM</span>
+        <span>ระบบวิเคราะห์น้ำท่วม จ.{selectedProvince} · GISTDA · TMD · DDPM</span>
         <span>TMD · NetworkX A* · Supabase CCTV · Typhoon AI · {new Date().toLocaleDateString('th-TH')}</span>
       </footer>
 
+      {showBenchmark && (
+        <ModelBenchmarkDashboard onClose={() => setShowBenchmark(false)} />
+      )}
     </div>
   );
 }

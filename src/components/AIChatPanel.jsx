@@ -1,11 +1,17 @@
+import DOMPurify from 'dompurify';
 
 export default function AIChatPanel({
   chatMessages,
   chatInput,
   setChatInput,
   sendChat,
-  isTyping
+  isTyping,
+  clock,
+  activeRouteId,
+  routes
 }) {
+  const activeRouteData = routes.find(r => r.id === activeRouteId);
+  
   return (
     <div className="sidebar-section xai-chat glass-panel" style={{ border: '1px solid var(--line-glass)' }}>
       
@@ -26,7 +32,7 @@ export default function AIChatPanel({
             SPHERE AI BRAIN v2.0
           </h3>
           <span style={{ fontSize: '8px', color: 'var(--cyber-blue)', fontFamily: 'IBM Plex Mono', fontWeight: 600 }}>
-            ● ONLINE · DYNAMIC CONTEXT ACTIVE
+            {clock} ● ONLINE · DYNAMIC CONTEXT ACTIVE
           </span>
         </div>
       </div>
@@ -46,7 +52,7 @@ export default function AIChatPanel({
         {chatMessages.map((msg, idx) => (
           <div key={idx} className={`chat-bubble-new ${msg.role === 'ai' ? 'ai' : 'user'}`}>
             {msg.html ? (
-              <div dangerouslySetInnerHTML={{ __html: msg.html }}></div>
+              <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(msg.html) }}></div>
             ) : (
               <div>{msg.text}</div>
             )}

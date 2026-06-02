@@ -1,9 +1,9 @@
 const BASE_URL = '/api';
 
 
-export const getVehicleRouteSummary = async () => {
+export const getVehicleRouteSummary = async (province = 'เชียงราย') => {
   try {
-    const res = await fetch(`${BASE_URL}/vehicles/route-summary`);
+    const res = await fetch(`${BASE_URL}/vehicles/route-summary?province=${province}`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -11,9 +11,9 @@ export const getVehicleRouteSummary = async () => {
   }
 };
 
-export const getAiBriefing = async () => {
+export const getAiBriefing = async (province = 'เชียงราย') => {
   try {
-    const res = await fetch(`${BASE_URL}/ai/briefing`);
+    const res = await fetch(`${BASE_URL}/ai/briefing?province=${province}`);
     if (!res.ok) return { briefing: '', alert_level: 1, generated_at: '' };
     return await res.json();
   } catch {

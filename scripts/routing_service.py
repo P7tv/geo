@@ -346,7 +346,11 @@ def route():
     start   = body.get('start')
     end     = body.get('end')
     blocked = (body.get('blockedPoints') or [])[:MAX_BLOCKED_PTS]
-    count   = min(int(body.get('routeCount', 2)), MAX_ROUTE_COUNT)
+    
+    try:
+        count = min(int(body.get('routeCount', 2)), MAX_ROUTE_COUNT)
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid routeCount'}), 400
 
     if not start or not end:
         return jsonify({'error': 'start and end required'}), 400
