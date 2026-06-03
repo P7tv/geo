@@ -21,6 +21,8 @@ import MissionMode from './components/MissionMode';
 import ModelBenchmarkDashboard from './components/ModelBenchmarkDashboard';
 import FloodAnimationControl from './components/FloodAnimationControl';
 
+import SimulationPanel from './components/SimulationPanel';
+
 
 const PROVINCES = {
   'เชียงราย': { id: 'เชียงราย', nameTh: 'เชียงราย', lat: 19.908, lon: 99.832 },
@@ -173,7 +175,7 @@ const SHELTER_ICONS = {
   assembly_point:{ emoji: renderToString(<Users size={16} />), color: 'rgba(245,158,11,0.8)' },
 };
 
-const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, floodFreqPolygons, shelters, waterLevels, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback, isMissionMode, mapRedrawTick, setSelectedCamera }) => {
+const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, waterLevels, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback, isMissionMode, mapRedrawTick, setSelectedCamera }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null, radarLayer: null, waterMarkers: [], dynLines: [], dynMarkers: [] });
@@ -577,6 +579,55 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
     });
   }, [dynRoutes, dynActiveRoute]);
 
+  // Sandbox Visual Water Layer (Fake flood polygons around high risk routes)
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    
+    if (layersRef.current.sandboxFloodOverlays) {
+      layersRef.current.sandboxFloodOverlays.forEach(o => {
+        try { mapInstance.current.Overlays.remove(o); } catch(e){}
+      });
+    }
+    layersRef.current.sandboxFloodOverlays = [];
+
+    // Only draw sandbox water if we have a high-risk scenario and it's toggled on
+    if (!toggles.flood || !allRoutesData?.length) return;
+    
+    // Check if any route has high risk (which indicates active simulation/danger)
+    const hasDanger = allRoutesData.some(r => r.risk >= 40);
+    if (!hasDanger) return;
+    
+    const overlays = [];
+    allRoutesData.forEach(route => {
+      if (route.risk >= 40) {
+        // High risk -> draw flood patches
+        const coords = route.geometry?.coordinates || [];
+        const numPatches = Math.min(coords.length, 12); // Draw up to 12 patches along the route
+        const step = Math.max(1, Math.floor(coords.length / numPatches));
+        
+        for (let i = 0; i < coords.length; i += step) {
+          const [lon, lat] = coords[i];
+          // Radius: 2000m for critical, 800m for warning
+          const radius = route.risk >= 80 ? 2000 : 800; 
+          const color = route.risk >= 80 ? 'rgba(59, 130, 246, 0.4)' : 'rgba(59, 130, 246, 0.2)';
+          const lineColor = route.risk >= 80 ? 'rgba(59, 130, 246, 0.6)' : 'rgba(59, 130, 246, 0.3)';
+          
+          const circle = new window.sphere.Circle(
+            { lon, lat },
+            radius,
+            { fillColor: color, lineColor: lineColor, lineWidth: 1 }
+          );
+          mapInstance.current.Overlays.add(circle);
+          overlays.push(circle);
+        }
+      }
+    });
+    
+    layersRef.current.sandboxFloodOverlays = overlays;
+    
+  }, [allRoutesData, toggles.flood]);
+
+
   // Start / End / Blocked markers
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
@@ -731,6 +782,12 @@ export default function App() {
   const [dynError, setDynError] = useState(null);
   const [dynDataStatus, setDynDataStatus] = useState(null);
   const [dynActiveRoute, setDynActiveRoute] = useState(null);
+
+  // Sandbox simulation states
+  const [isSandboxOpen, setIsSandboxOpen] = useState(false);
+  const [sandboxResults, setSandboxResults] = useState(null);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [sandboxHour, setSandboxHour] = useState(0);
   // 'local-graph' | 'osrm' | 'precomputed' | null
   const [dynRoutingSource, setDynRoutingSource] = useState(null);
   const [dynFallbackFrom, setDynFallbackFrom] = useState(null);   // 'local-graph' when OSRM used as backup
@@ -983,21 +1040,6 @@ export default function App() {
       }
     } catch (_) {}
 
-    // Flood-freq polygons for histFreq layer
-    try {
-      const url = `/api/gistda/flood-freq-polygons?province=${encodeURIComponent(selectedProvince)}`;
-      console.log('[DEBUG] Fetching flood-freq from:', url);
-      const r = await fetch(url);
-      const d = await r.json();
-      console.log('[DEBUG] flood-freq response:', d);
-      if (d.features?.length) {
-        setFloodFreqPolygons(d.features);
-      } else {
-        console.warn('[DEBUG] flood-freq returned 0 features.');
-      }
-    } catch (err) {
-      console.error('[DEBUG] flood-freq fetch failed:', err);
-    }
   };
 
   const fetchRegionalWeather = async () => {
@@ -1370,36 +1412,98 @@ export default function App() {
 
   const isPrecomputedFallback = dynRoutingSource === 'precomputed';
   const activeData = { ...ROUTES_BASE.find(r => r.id === activeRoute), ...routePaths[activeRoute] };
+
+  // Simulation helper: if actual rain is near zero, inject a synthetic floor
+  // so the slider always produces a visible effect
+  const simulateRain = (actualRain, multiplier) => {
+    if (multiplier === 1.0) return actualRain;
+    const base = actualRain || 0;
+    // When multiplier > 1 and rain is negligible, inject a meaningful baseline
+    // x1.5 → mild rain (0.2), x2 → moderate (0.35), x3 → heavy (0.6)
+    const syntheticFloor = Math.max(base, (multiplier - 1) * 0.3);
+    return Math.min(1.0, syntheticFloor * multiplier);
+  };
+
+  const recalcRisk = (features) => Math.min(100, Math.round(
+    (features.f_flood_exposure || 0) * 100 * 0.45 +
+    (features.f_forecast_rain || 0) * 100 * 0.25 +
+    (features.f_historical || 0) * 100 * 0.20 +
+    (features.f_soil || 0) * 100 * 0.10
+  ));
+
   const allRoutesData = ROUTES_BASE.map(r => {
     const data = { ...r, ...routePaths[r.id] };
     if (data.features && simulationRainMultiplier !== 1.0) {
       data.features = { ...data.features };
-      data.features.f_forecast_rain = Math.min(1.0, (data.features.f_forecast_rain || 0) * simulationRainMultiplier);
-      data.risk = Math.min(100, Math.round(
-        (data.features.f_flood_exposure || 0) * 100 * 0.45 +
-        data.features.f_forecast_rain * 100 * 0.25 +
-        (data.features.f_historical || 0) * 100 * 0.20 +
-        (data.features.f_soil || 0) * 100 * 0.10
-      ));
+      data.features.f_forecast_rain = simulateRain(data.features.f_forecast_rain, simulationRainMultiplier);
+      data.risk = recalcRisk(data.features);
     }
     return data;
   });
 
   // Apply to dynRoutes during render
   const simulatedDynRoutes = dynRoutes.map(route => {
-    if (simulationRainMultiplier === 1.0) return route;
-    const data = { ...route, features: { ...route.features } };
-    data.features.f_forecast_rain = Math.min(1.0, (data.features.f_forecast_rain || 0) * simulationRainMultiplier);
-    data.risk = Math.min(100, Math.round(
-      (data.features.f_flood_exposure || 0) * 100 * 0.45 +
-      data.features.f_forecast_rain * 100 * 0.25 +
-      (data.features.f_historical || 0) * 100 * 0.20 +
-      (data.features.f_soil || 0) * 100 * 0.10
-    ));
+    let data = { ...route, features: { ...route.features } };
+    
+    // Apply sandbox results if available
+    if (sandboxResults?.routes) {
+      const matched = sandboxResults.routes.find(r => r.route_id === route.id);
+      if (matched && matched.timeline) {
+        const t = matched.timeline.find(t => t.hour === `+${sandboxHour}h`) || matched.timeline[0];
+        data.risk = t.risk;
+      }
+    } else {
+      if (simulationRainMultiplier !== 1.0) {
+        data.features.f_forecast_rain = simulateRain(data.features.f_forecast_rain, simulationRainMultiplier);
+        data.risk = recalcRisk(data.features);
+      }
+    }
     if (data.blocked) data.risk = Math.min(100, data.risk + (data.blockedPenalty || 25));
     return data;
   });
-  // Flood depth per route from nearest river station — max(0, level - warning_level) in metres
+
+  const allRoutesDataWithSandbox = allRoutesData.map(route => {
+    let data = { ...route };
+    if (sandboxResults?.routes) {
+      const matched = sandboxResults.routes.find(r => r.route_id === route.id);
+      if (matched && matched.timeline) {
+        const t = matched.timeline.find(t => t.hour === `+${sandboxHour}h`) || matched.timeline[0];
+        data.risk = t.risk;
+      }
+    }
+    return data;
+  });
+
+  const handleRunSimulation = async (params) => {
+    setIsSimulating(true);
+    try {
+      const payload = {
+        province: selectedProvince,
+        rain_mm_per_day: params.rain_mm_per_day,
+        duration_days: params.duration_days,
+        river_level: params.river_level,
+        road_blocks: dynBlocked,
+        routes: routeMode === 'dynamic' ? dynRoutes : allRoutesData
+      };
+      
+      const r = await fetch('/api/b200/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json();
+      if (d.status === 'success') {
+        setSandboxResults(d);
+        setSandboxHour(0);
+      } else {
+        addToast('การจำลองล้มเหลว: ' + d.message, 'error');
+      }
+    } catch (err) {
+      addToast('การเชื่อมต่อกับ B200 ล้มเหลว', 'error');
+    } finally {
+      setIsSimulating(false);
+    }
+  };
 
   // Toggle body data-theme when mission mode changes
   useEffect(() => {
@@ -1427,7 +1531,7 @@ export default function App() {
       {isMissionMode && (
         <MissionMode 
           onClose={() => setIsMissionMode(false)}
-          routes={routeMode === 'dynamic' ? simulatedDynRoutes : allRoutesData}
+          routes={routeMode === 'dynamic' ? simulatedDynRoutes : allRoutesDataWithSandbox}
           activeRouteId={routeMode === 'dynamic' ? dynActiveRoute : activeRoute}
           setActiveRouteId={routeMode === 'dynamic' ? setDynActiveRoute : setActiveRoute}
           tmdAlertText={tmdAlertText}
@@ -1438,6 +1542,7 @@ export default function App() {
           selectedCamera={selectedCamera}
         />
       )}
+
 
       {/* Toasts */}
       <div className="toast-container">
@@ -1603,9 +1708,50 @@ export default function App() {
                   );
                 })}
               </div>
+              <button 
+                onClick={() => setIsSandboxOpen(!isSandboxOpen)}
+                style={{ width: '100%', padding: '8px', background: isSandboxOpen ? 'var(--blue-primary)' : 'rgba(51, 65, 85, 0.5)', color: '#fff', border: 'none', borderRadius: '100px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' }}
+              >
+                🎮 Sandbox Simulation
+              </button>
             </div>
 
             <div className="left-panel-scroll" ref={leftPanelScrollRef}>
+              
+              {isSandboxOpen && (
+                <div style={{ padding: '0 20px 20px 20px' }}>
+                  <SimulationPanel 
+                    onSimulate={handleRunSimulation} 
+                    isSimulating={isSimulating} 
+                    results={sandboxResults} 
+                  />
+                  {sandboxResults && (
+                    <div style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', padding: '12px', borderRadius: 'var(--radius-md)', color: 'var(--text-1)', boxShadow: 'var(--shadow-sm)' }}>
+                      <div style={{ fontSize: '11px', fontWeight: 600, marginBottom: '8px', color: 'var(--text-2)' }}>Timeline (+ชั่วโมง) & Visual Map Layer</div>
+                      <div style={{ display: 'flex', gap: '4px' }}>
+                        {[0, 6, 12, 24, 72].map(h => (
+                          <button key={h} onClick={() => {
+                            setSandboxHour(h);
+                            setToggles(prev => ({ ...prev, flood: true }));
+                            if (h <= 6) setFloodRange('1day');
+                            else if (h === 12) setFloodRange('3days');
+                            else if (h === 24) setFloodRange('7days');
+                            else if (h === 72) setFloodRange('30days');
+                          }} style={{
+                            flex: 1, padding: '6px', borderRadius: '4px', border: '1px solid var(--border)',
+                            background: sandboxHour === h ? 'var(--blue-primary)' : 'var(--bg-2)',
+                            color: sandboxHour === h ? '#fff' : 'var(--text-1)', cursor: 'pointer',
+                            fontSize: '11px', fontWeight: sandboxHour === h ? 600 : 400, transition: 'all 0.2s'
+                          }}>
+                            +{h}h
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
 
               {/* Dynamic Routing Control Panel */}
               {routeMode === 'dynamic' && (
@@ -2079,13 +2225,11 @@ export default function App() {
               activeMapType={activeMapType}
               selectedProvince={selectedProvince}
               activeRoute={activeRoute}
-              allRoutesData={allRoutesData}
               stationData={stationData}
               incidents={incidents}
               toggles={toggles}
               vehicleData={vehicleData}
               gistdaRiskPoints={gistdaRiskPoints}
-              floodFreqPolygons={floodFreqPolygons}
               shelters={shelters}
               waterLevels={waterLevels}
               floodRange={floodRange}
@@ -2102,6 +2246,7 @@ export default function App() {
               isMissionMode={isMissionMode}
               mapRedrawTick={mapRedrawTick}
               setSelectedCamera={setSelectedCamera}
+              allRoutesData={allRoutesDataWithSandbox}
             />
 
             <FloodAnimationControl

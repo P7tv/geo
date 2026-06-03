@@ -1965,6 +1965,29 @@ app.post('/api/detect-cctv', async (req, res) => {
   }
 });
 
+// ── Proxy for Sandbox Simulation ────────────────────────────────
+app.post('/api/b200/simulate', async (req, res) => {
+  try {
+    const payload = req.body;
+    console.log(`[API] Forwarding simulation to B200:`, { rain: payload.rain_mm_per_day, days: payload.duration_days, river: payload.river_level });
+    const response = await fetch(`${ML_INFERENCE_URL}/simulate`, {
+      method: 'POST',
+      headers: mlHeaders(),
+      body: JSON.stringify(payload),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Simulation backend responded with status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error('[API] Simulation proxy error:', err.message);
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
 // ── Proxy for YOLOv8 CCTV Real-time Stream ──────────────────────────────
 
 app.get('/api/stream-cctv', (req, res) => {

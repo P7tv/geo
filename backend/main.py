@@ -108,6 +108,14 @@ class ResourceOptRequest(BaseModel):
     total_vehicles: int
     routes: List[Dict] # e.g. [{"id": "A", "risk": 80, "distance": 10}, ...]
 
+class SimulationScenario(BaseModel):
+    province: str
+    rain_mm_per_day: float
+    duration_days: int
+    river_level: str  # "normal", "warning", "critical"
+    road_blocks: list
+    routes: list
+
 @app.post("/predict_risk")
 async def predict_risk(features: RouteFeatures):
     """
@@ -221,6 +229,98 @@ async def forecast_risk(features: RouteFeatures):
         })
         
     return {"timeline": timeline}
+
+@app.post("/simulate")
+async def simulate(req: SimulationScenario):
+    """
+    Sandbox Simulation Engine
+    Calculates future timeline risk for routes based on custom scenario parameters.
+    """
+    results = []
+    
+    # Base weather and river severity calculation
+    rain_factor = min(1.0, req.rain_mm_per_day / 150.0)
+    
+    river_multiplier = 1.0
+    if req.river_level == "warning": river_multiplier = 1.5
+    elif req.river_level == "critical": river_multiplier = 2.5
+    
+    best_route = None
+    min_risk = float('inf')
+    
+    for route in req.routes:
+        timeline = []
+        base_features = route.get("features", {})
+        
+        f_exp = base_features.get("f_flood_exposure", 0)
+        f_hist = base_features.get("f_historical", base_features.get("f_historical_freq", 0))
+        f_soil = base_features.get("f_soil", base_features.get("f_soil_moisture", 0))
+        
+        blocked = route.get("blocked", False)
+        
+        for h in [0, 6, 12, 24, 72]:
+            days = h / 24.0
+            
+            if days <= req.duration_days:
+                h_rain = rain_factor
+                h_soil = min(1.0, f_soil + (h_rain * days * 0.2))
+            else:
+                h_rain = rain_factor * max(0, 1.0 - (days - req.duration_days))
+                h_soil = min(1.0, f_soil + (rain_factor * req.duration_days * 0.2) - ((days - req.duration_days)*0.1))
+                
+            h_exp = min(1.0, f_exp * river_multiplier)
+                
+            feat = RouteFeatures(
+                f_flood_exposure=h_exp,
+                f_forecast_rain=h_rain,
+                f_historical_freq=f_hist,
+                f_soil_moisture=max(0, h_soil)
+            )
+            
+            res = await predict_risk(feat)
+            risk = res["risk_score"]
+            
+            # Sandbox Simulation Amplifier: Make sure severe scenarios visually turn routes yellow/red
+            if req.river_level == "critical":
+                risk += 50 * h_exp + 20 * h_rain
+            elif req.river_level == "warning":
+                risk += 25 * h_exp + 10 * h_rain
+                
+            risk += (h_rain * 30)
+            risk = min(100.0, max(0.0, risk))
+            
+            if blocked: risk = min(100, risk + 25)
+            
+            timeline.append({
+                "hour": f"+{h}h",
+                "risk": risk
+            })
+            
+        current_risk = timeline[0]["risk"]
+        
+        if current_risk < min_risk:
+            min_risk = current_risk
+            best_route = route.get("id")
+            
+        results.append({
+            "route_id": route.get("id"),
+            "risk": current_risk,
+            "timeline": timeline
+        })
+        
+    recommendation = ""
+    if min_risk > 80:
+         recommendation = f"วิกฤต (ความเสี่ยง {min_risk:.0f}%): ไม่ควรสัญจรโดยเด็ดขาด ให้พิจารณาอพยพทางอากาศหรือเรือ"
+    elif min_risk > 50:
+         recommendation = f"ระวัง (ความเสี่ยง {min_risk:.0f}%): ควรใช้เส้นทาง {best_route} แต่ต้องใช้รถยกสูงเท่านั้น"
+    else:
+         recommendation = f"ปลอดภัย (ความเสี่ยง {min_risk:.0f}%): สามารถใช้เส้นทาง {best_route} สำหรับการสัญจรหรืออพยพได้"
+
+    return {
+        "status": "success",
+        "routes": results,
+        "recommendation": recommendation
+    }
 
 @app.post("/optimize_resources")
 async def optimize_resources(req: ResourceOptRequest):
