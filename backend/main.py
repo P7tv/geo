@@ -17,6 +17,8 @@ import joblib
 import pandas as pd
 from scipy.optimize import linprog
 import routing
+import threading
+import time
 
 FEATURE_COLS = ["f_flood_exposure", "f_forecast_rain", "f_historical_freq", "f_soil_moisture"]
 
@@ -49,12 +51,17 @@ async def lifespan(app: FastAPI):
     print("Loading Ensemble Models...")
     try:
         if YOLO is not None:
-            print("Loading YOLOv8 Large model for B200 GPU...")
-            yolo_model = YOLO("yolov8l.pt")
             try:
-                yolo_model.to('cuda:0')
+                print("Loading YOLOv8 model for inference...")
+                yolo_model = YOLO("yolov8n.pt")
+                try:
+                    yolo_model.to('cuda:0')
+                except Exception as cuda_err:
+                    print(f"Could not pin to cuda:0, running on CPU: {cuda_err}")
             except Exception as e:
-                print(f"Could not pin to cuda:0, falling back: {e}")
+                print(f"Failed to load YOLO model: {e}")
+                yolo_model = None
+                
         # 1. XGBoost
         xgb_model = xgb.Booster()
         xgb_model.load_model("models/xgb_flood_risk.json")
@@ -478,7 +485,7 @@ def detect_cctv(req: CCTVRequest):
     try:
         image = _load_image_from_url(req.image_url)
         
-        results = yolo_model(image, verbose=False)
+        results = yolo_model(image, verbose=False, conf=0.15)
         
         detections = []
         v_count = 0
@@ -518,25 +525,133 @@ def detect_cctv(req: CCTVRequest):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+class ThreadedVideoCapture:
+    def __init__(self, url):
+        self.cap = cv2.VideoCapture(url)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.ret = False
+        self.frame = None
+        self.running = True
+        self.lock = threading.Lock()
+        self.thread = threading.Thread(target=self._update, daemon=True)
+        self.thread.start()
+
+    def _update(self):
+        while self.running:
+            if not self.cap.isOpened():
+                time.sleep(0.01)
+                continue
+            ret, frame = self.cap.read()
+            if ret:
+                with self.lock:
+                    self.ret = ret
+                    self.frame = frame.copy() if frame is not None else None
+            else:
+                time.sleep(0.01)
+
+    def read(self):
+        with self.lock:
+            return self.ret, self.frame
+
+    def release(self):
+        self.running = False
+        if self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+        self.cap.release()
+
 def generate_frames(url: str):
     if yolo_model is None:
         yield (b'--frame\r\nContent-Type: text/plain\r\n\r\nYOLO model not loaded\r\n')
         return
         
-    cap = cv2.VideoCapture(url)
-    if not cap.isOpened():
-        yield (b'--frame\r\nContent-Type: text/plain\r\n\r\nError opening video stream\r\n')
+    reader = ThreadedVideoCapture(url)
+    
+    # Wait for the first frame up to 10 seconds
+    start_time = time.time()
+    first_frame_ok = False
+    while time.time() - start_time < 10.0:
+        ret, frame = reader.read()
+        if ret and frame is not None:
+            first_frame_ok = True
+            break
+        time.sleep(0.1)
+        
+    if not first_frame_ok:
+        reader.release()
+        yield (b'--frame\r\nContent-Type: text/plain\r\n\r\nError opening video stream or timeout\r\n')
         return
         
     vehicle_classes = [2, 3, 5, 7]
     person_classes = [0]
     
-    while True:
-        success, frame = cap.read()
-        if not success:
-            break
+    target_fps = 15
+    interval = 1.0 / target_fps
+    
+    try:
+        while True:
+            t0 = time.time()
+            ret, frame = reader.read()
+            if not ret or frame is None:
+                time.sleep(0.02)
+                continue
+                
+            # Run inference on a copy of the frame to keep drawing isolated
+            display_frame = frame.copy()
+            results = yolo_model(display_frame, stream=False, verbose=False, conf=0.15)
             
-        results = yolo_model(frame, stream=True, verbose=False)
+            for r in results:
+                boxes = r.boxes
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    if cls_id in vehicle_classes or cls_id in person_classes:
+                        x1, y1, x2, y2 = box.xyxy[0].tolist()
+                        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                        conf = float(box.conf[0])
+                        
+                        label = "Vehicle" if cls_id in vehicle_classes else "Person"
+                        color = (0, 255, 0) if label == "Vehicle" else (0, 0, 255)
+                        
+                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                        cv2.putText(display_frame, f"{label} {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            ret, buffer = cv2.imencode('.jpg', display_frame)
+            if not ret:
+                continue
+            frame_bytes = buffer.tobytes()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            
+            # Rate limiting
+            elapsed = time.time() - t0
+            sleep_time = interval - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+    except Exception as e:
+        print(f"Error in stream generator: {e}")
+    finally:
+        reader.release()
+
+@app.get("/stream_cctv")
+async def stream_cctv(url: str):
+    return StreamingResponse(generate_frames(url), media_type='multipart/x-mixed-replace; boundary=frame')
+
+from fastapi import Response
+
+@app.post("/process_frame")
+async def process_frame(request: Request):
+    if yolo_model is None:
+        return Response(content=b"", status_code=500)
+    try:
+        img_bytes = await request.body()
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return Response(content=b"", status_code=400)
+            
+        vehicle_classes = [2, 3, 5, 7]
+        person_classes = [0]
+        
+        results = yolo_model(frame, stream=False, verbose=False, conf=0.15)
         for r in results:
             boxes = r.boxes
             for box in boxes:
@@ -551,16 +666,63 @@ def generate_frames(url: str):
                     
                     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        
+                    
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret:
-            continue
-        frame_bytes = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-               
-    cap.release()
+            return Response(content=b"", status_code=500)
+        return Response(content=buffer.tobytes(), media_type="image/jpeg")
+    except Exception as e:
+        print(f"Error in process_frame: {e}")
+        return Response(content=b"", status_code=500)
 
-@app.get("/stream_cctv")
-async def stream_cctv(url: str):
-    return StreamingResponse(generate_frames(url), media_type='multipart/x-mixed-replace; boundary=frame')
+@app.post("/detect_cctv_bytes")
+async def detect_cctv_bytes(request: Request):
+    if yolo_model is None:
+        return {"status": "error", "message": "YOLO model not loaded"}
+    try:
+        img_bytes = await request.body()
+        nparr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if frame is None:
+            return {"status": "error", "message": "Invalid image data"}
+            
+        results = yolo_model(frame, verbose=False, conf=0.15)
+        
+        detections = []
+        v_count = 0
+        p_count = 0
+        
+        vehicle_classes = [2, 3, 5, 7]
+        person_classes = [0]
+        
+        for r in results:
+            boxes = r.boxes
+            for box in boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxyn[0].tolist()
+                
+                label = "unknown"
+                if cls_id in vehicle_classes:
+                    label = "vehicle"
+                    v_count += 1
+                elif cls_id in person_classes:
+                    label = "person"
+                    p_count += 1
+                else:
+                    continue
+                    
+                detections.append({
+                    "class": label,
+                    "confidence": conf,
+                    "bbox": [x1, y1, x2, y2]
+                })
+                
+        return {
+            "status": "success",
+            "counts": {"vehicles": v_count, "people": p_count},
+            "detections": detections
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+

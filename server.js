@@ -1776,6 +1776,177 @@ app.get('/api/ml-metrics', async (_req, res) => {
   }
 });
 
+app.post('/api/detect-cctv', async (req, res) => {
+  try {
+    const { image_url } = req.body;
+    if (!image_url) return res.status(400).json({ error: 'Missing image_url' });
+
+    console.log(`[API] Downloading static image locally: ${image_url}`);
+    const imgRes = await fetch(image_url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!imgRes.ok) {
+      throw new Error(`Failed to fetch image from source: ${imgRes.statusText}`);
+    }
+    const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
+
+    console.log(`[API] Forwarding image bytes to the Python B200 VM for YOLOv8 detection`);
+    const response = await fetch(`${ML_INFERENCE_URL}/detect_cctv_bytes`, {
+      method: 'POST',
+      headers: {
+        ...mlHeaders(),
+        'Content-Type': 'image/jpeg'
+      },
+      body: imgBuffer,
+    });
+    
+    if (!response.ok) {
+      throw new Error(`YOLO backend responded with status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error('[API] YOLO CCTV Detection proxy error:', err.message);
+    res.status(500).json({ error: err.message, fallback: true });
+  }
+});
+
+// ── Proxy for Sandbox Simulation ────────────────────────────────
+app.post('/api/b200/simulate', async (req, res) => {
+  try {
+    const payload = req.body;
+    console.log(`[API] Forwarding simulation to B200:`, { rain: payload.rain_mm_per_day, days: payload.duration_days, river: payload.river_level });
+    const response = await fetch(`${ML_INFERENCE_URL}/simulate`, {
+      method: 'POST',
+      headers: mlHeaders(),
+      body: JSON.stringify(payload),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Simulation backend responded with status: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error('[API] Simulation proxy error:', err.message);
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
+// ── Proxy for YOLOv8 CCTV Real-time Stream ──────────────────────────────
+
+// A simple function to stream MJPEG and parse frames
+function parseMJPEG(url, onFrame, onError) {
+  const lib = url.startsWith('https') ? https : http;
+  const req = lib.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+    let buffer = Buffer.alloc(0);
+    res.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      
+      while (true) {
+        const soi = buffer.indexOf(Buffer.from([0xff, 0xd8]));
+        if (soi === -1) break;
+        
+        const eoi = buffer.indexOf(Buffer.from([0xff, 0xd9]), soi);
+        if (eoi === -1) break;
+        
+        const frame = buffer.subarray(soi, eoi + 2);
+        onFrame(frame);
+        
+        buffer = buffer.subarray(eoi + 2);
+      }
+    });
+    res.on('end', () => onError(new Error("Stream ended")));
+    res.on('error', (err) => onError(err));
+  });
+  req.on('error', (err) => onError(err));
+  return req;
+}
+
+app.get('/api/stream-cctv', (req, res) => {
+  try {
+    const url = req.query.url;
+    if (!url) return res.status(400).send("url is required");
+    
+    res.setHeader('Content-Type', 'multipart/x-mixed-replace; boundary=frame');
+    
+    let activeRequest = null;
+    let isClosed = false;
+    
+    res.on('close', () => {
+      isClosed = true;
+      if (activeRequest) {
+        activeRequest.destroy();
+      }
+    });
+
+    let lastProcessedTime = 0;
+    const frameInterval = 80; // Target ~12 FPS
+    let isProcessing = false;
+    
+    activeRequest = parseMJPEG(url, async (jpegFrame) => {
+      if (isClosed) return;
+      
+      const now = Date.now();
+      if (now - lastProcessedTime < frameInterval || isProcessing) {
+        // Skip frames to keep up with stream speed
+        return;
+      }
+      
+      isProcessing = true;
+      lastProcessedTime = now;
+      
+      try {
+        const targetUrl = `${ML_INFERENCE_URL}/process_frame`;
+        const response = await fetch(targetUrl, {
+          method: 'POST',
+          headers: {
+            ...mlHeaders(),
+            'Content-Type': 'image/jpeg'
+          },
+          body: jpegFrame,
+          signal: AbortSignal.timeout(1500)
+        });
+        
+        if (response.ok) {
+          const annotatedBytes = Buffer.from(await response.arrayBuffer());
+          if (!isClosed) {
+            res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${annotatedBytes.length}\r\n\r\n`);
+            res.write(annotatedBytes);
+            res.write('\r\n');
+          }
+        } else {
+          // Fallback to original frame on error
+          if (!isClosed) {
+            res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegFrame.length}\r\n\r\n`);
+            res.write(jpegFrame);
+            res.write('\r\n');
+          }
+        }
+      } catch (err) {
+        console.error('[API] Error processing frame with B200:', err.message);
+        if (!isClosed) {
+          res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegFrame.length}\r\n\r\n`);
+          res.write(jpegFrame);
+          res.write('\r\n');
+        }
+      } finally {
+        isProcessing = false;
+      }
+    }, (err) => {
+      console.error('[API] MJPEG Stream Error:', err.message);
+      if (!res.writableEnded) {
+        res.end();
+      }
+    });
+  } catch (err) {
+    console.error('[API] stream-cctv top level error:', err.message);
+    if (!res.writableEnded) {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
+
 app.post('/api/dynamic-routes', async (req, res) => {
   try {
     const { start, end, blockedPoints = [], routeCount = 3 } = req.body ?? {};
@@ -1940,79 +2111,6 @@ app.post('/api/dynamic-routes', async (req, res) => {
   }
 });
 
-// ── Proxy for YOLOv8 CCTV Detection Backend ────────────────────────────────
-app.post('/api/detect-cctv', async (req, res) => {
-  try {
-    const { image_url } = req.body;
-    if (!image_url) return res.status(400).json({ error: 'Missing image_url' });
-
-    console.log(`[API] Forward the image URL to the Python VM (FastAPI) running YOLOv8`);
-    const response = await fetch(`${ML_INFERENCE_URL}/detect_cctv`, {
-      method: 'POST',
-      headers: mlHeaders(),
-      body: JSON.stringify({ image_url }),
-    });
-    
-    if (!response.ok) {
-      throw new Error(`YOLO backend responded with status: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('[API] YOLO CCTV Detection proxy error:', err.message);
-    res.status(500).json({ error: err.message, fallback: true });
-  }
-});
-
-// ── Proxy for Sandbox Simulation ────────────────────────────────
-app.post('/api/b200/simulate', async (req, res) => {
-  try {
-    const payload = req.body;
-    console.log(`[API] Forwarding simulation to B200:`, { rain: payload.rain_mm_per_day, days: payload.duration_days, river: payload.river_level });
-    const response = await fetch(`${ML_INFERENCE_URL}/simulate`, {
-      method: 'POST',
-      headers: mlHeaders(),
-      body: JSON.stringify(payload),
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Simulation backend responded with status: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    res.json(data);
-  } catch (err) {
-    console.error('[API] Simulation proxy error:', err.message);
-    res.status(500).json({ status: 'error', message: err.message });
-  }
-});
-
-// ── Proxy for YOLOv8 CCTV Real-time Stream ──────────────────────────────
-
-app.get('/api/stream-cctv', (req, res) => {
-  try {
-    const url = req.query.url;
-    if (!url) return res.status(400).send("url is required");
-    
-    const targetUrl = new URL(`${ML_INFERENCE_URL}/stream_cctv?url=${encodeURIComponent(url)}`);
-    const lib = targetUrl.protocol === 'https:' ? https : http;
-    
-    const proxyReq = lib.request(targetUrl, { headers: mlHeaders() }, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, proxyRes.headers);
-      proxyRes.pipe(res);
-    });
-    
-    proxyReq.on('error', (e) => {
-      console.error('[API] Stream Proxy Error:', e.message);
-      res.status(500).send("Proxy error: " + e.message);
-    });
-    
-    proxyReq.end();
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ── GISTDA flood-freq values (per route, from /features/flood-freq bbox PiP) ────
 // Return raw flood-freq polygon features with geometry — for map rendering
@@ -2078,7 +2176,7 @@ const logSnapshot = async () => {
       await supabase.from('radar_snapshots').insert([{
         timestamp: new Date(rainRadarCache.ts).toISOString(),
         rainviewer_path: rainRadarCache.path
-      }]).catch(() => {});
+      }]);
     }
     
     // 2. Log Water Levels
@@ -2090,7 +2188,7 @@ const logSnapshot = async () => {
         situation_level: s.situation_level || 1,
         recorded_at: s.datetime || new Date().toISOString()
       }));
-      await supabase.from('water_level_logs').insert(logs).catch(() => {});
+      await supabase.from('water_level_logs').insert(logs);
     }
     
     // 3. Log Early Warning Triggers
@@ -2100,7 +2198,7 @@ const logSnapshot = async () => {
         province,
         alert_level: status.alert_level,
         message: status.message
-      }]).catch(() => {});
+      }]);
     }
     console.log('✅ Data Pipeline Snapshot completed');
   } catch (err) {
