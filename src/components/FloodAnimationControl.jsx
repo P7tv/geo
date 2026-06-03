@@ -33,7 +33,8 @@ export default function FloodAnimationControl({ floodRange, setFloodRange, isFlo
     <div className="flood-animation-control" style={{
       position: 'absolute',
       bottom: 24,
-      right: 180, // Next to the map legend
+      left: '50%',
+      transform: 'translateX(-50%)',
       background: 'rgba(15, 23, 42, 0.85)',
       backdropFilter: 'blur(8px)',
       border: '1px solid var(--border)',

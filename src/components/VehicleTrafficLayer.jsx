@@ -1,3 +1,6 @@
+import { renderToString } from 'react-dom/server';
+import { Car, AlertTriangle, Ban } from 'lucide-react';
+
 /**
  * Renders circular floating traffic status badges in the middle coordinates of route polylines
  * Using GISTDA Sphere Map JS API
@@ -30,7 +33,11 @@ export const renderVehicleTrafficBadges = (mapInstance, routePaths, vehicleData,
       const isWarning = data.congestion_level === 'warning';
       
       const color = isBlocked ? 'var(--critical-red)' : isWarning ? 'var(--hazard-amber)' : 'var(--neon-emerald)';
-      const emoji = isBlocked ? '🚫' : isWarning ? '⚠️' : '🚗';
+      const iconHtml = isBlocked 
+        ? renderToString(<Ban size={14} color="#ff3b30" />) 
+        : isWarning 
+          ? renderToString(<AlertTriangle size={14} color="#ffb300" />) 
+          : renderToString(<Car size={14} color="#00d4aa" />);
       
       const html = `<div style="
         background: rgba(11, 15, 25, 0.95);
@@ -48,7 +55,7 @@ export const renderVehicleTrafficBadges = (mapInstance, routePaths, vehicleData,
         box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         white-space: nowrap;
         pointer-events: auto;
-      ">${escapeHtml(emoji)} ${escapeHtml(data.vehicle_count || 0)} คัน (${escapeHtml(data.avg_speed || 0)} กม/ชม)</div>`;
+      ">${iconHtml} <span style="margin-top:1px">${escapeHtml(data.vehicle_count || 0)} คัน (${escapeHtml(data.avg_speed || 0)} กม/ชม)</span></div>`;
 
       // Create Sphere Marker with Custom HTML
       const marker = new window.sphere.Marker(

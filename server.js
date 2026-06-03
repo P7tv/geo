@@ -68,6 +68,13 @@ const TMD_TOKEN = process.env.TMD_TOKEN;
 if (!TMD_TOKEN) console.warn('⚠️  TMD_TOKEN missing in .env — weather API disabled');
 
 const ML_INFERENCE_URL = process.env.ML_INFERENCE_URL || 'http://127.0.0.1:8087';
+const B200_API_KEY     = process.env.B200_API_KEY || '';
+const JUPYTERHUB_TOKEN = process.env.JUPYTERHUB_TOKEN || '';
+const mlHeaders        = () => ({
+  'Content-Type': 'application/json',
+  ...(B200_API_KEY ? { 'X-API-Key': B200_API_KEY } : {}),
+  ...(JUPYTERHUB_TOKEN ? { 'Authorization': `token ${JUPYTERHUB_TOKEN}` } : {})
+});
 console.log(`🤖 ML Inference API targeted at: ${ML_INFERENCE_URL}`);
 
 // Supabase (CCTV detections from Jetson)
@@ -311,8 +318,6 @@ const computeHistoricalRisk = (_routePoints, freqFeatures) => {
   return totalArea > 0 ? +(weightedFreq / totalArea).toFixed(3) : null;
 };
 
-// wrapper ที่ยังใช้ชื่อ fetchFloodFreq เพื่อไม่ต้องแก้ call site เดิม
-const fetchFloodFreq = async () => ({});  // ไม่ใช้แล้ว → per-route ใน flood-routes endpoint
 
 // LDD soil polygons — loaded from data/soil_polygons.json (pre-processed once by export_soil_polygons.py)
 // Each entry: { risk, bbox:[minLon,minLat,maxLon,maxLat], ring:[[lon,lat],...], holes:[[[lon,lat],...]] }
@@ -570,7 +575,7 @@ const predictRouteRiskML = async (routeId, weather, floodExposure, _damLevels, _
     const timeout = setTimeout(() => controller.abort(), 2000); // 2s timeout
     const response = await fetch(`${ML_INFERENCE_URL}/predict_risk`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: mlHeaders(),
       body: JSON.stringify({
         f_flood_exposure: baseResult.features.f_flood_exposure,
         f_forecast_rain: baseResult.features.f_forecast_rain,
@@ -584,6 +589,7 @@ const predictRouteRiskML = async (routeId, weather, floodExposure, _damLevels, _
     if (response.ok) {
       const mlData = await response.json();
       if (mlData.status === 'success') {
+        reportB200Result(true);
         return {
           ...baseResult,
           risk: Math.round(mlData.risk_score),
@@ -593,8 +599,9 @@ const predictRouteRiskML = async (routeId, weather, floodExposure, _damLevels, _
         };
       }
     }
+    reportB200Result(false);
   } catch (error) {
-    // Silently fallback to baseResult if ML server is down
+    reportB200Result(false);
   }
   
   return baseResult;
@@ -712,7 +719,7 @@ let shelterCache = { data: null, ts: 0 };
 const SHELTER_TTL = 3_600_000;
 
 // Safe fetch with timeout helper
-const fetchWithTimeout = (url, opts = {}, ms = 8000) => {
+const fetchWithTimeout = async (url, opts = {}, ms = 8000) => {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(t));
@@ -844,9 +851,16 @@ app.get('/api/early-warning', async (req, res) => {
 });
 
 // ── TMD official weather warnings ─────────────────────────────────────────────
+// Cache negative result 5 min to avoid log spam when TMD endpoint returns HTML
+const tmdWarningsCache = {};
+const TMD_WARN_TTL = 5 * 60_000;
+
 app.get('/api/warnings', async (req, res) => {
+  const provinceName = req.query.province || 'เชียงราย';
+  const cached = tmdWarningsCache[provinceName];
+  if (cached && Date.now() - cached.ts < TMD_WARN_TTL) return res.json(cached.data);
+
   try {
-    const provinceName = req.query.province || 'เชียงราย';
     const pInfo = PROVINCES[provinceName] || PROVINCES['เชียงราย'];
     const r = await fetchWithTimeout(
       `https://data.tmd.go.th/api/v1/warnings?province=${encodeURIComponent(pInfo.nameTh)}&type=json`,
@@ -854,19 +868,23 @@ app.get('/api/warnings', async (req, res) => {
       8000
     );
     if (!r.ok) {
-      console.warn(`TMD warnings: ${r.status}, using mock fallback`);
-      return res.json({ Warning: [] }); // Empty warnings if API is down
+      console.warn(`TMD warnings HTTP ${r.status} — cached empty for 5 min`);
+      tmdWarningsCache[provinceName] = { data: { Warning: [] }, ts: Date.now() };
+      return res.json({ Warning: [] });
     }
-    
     const text = await r.text();
     try {
-      res.json(JSON.parse(text));
+      const data = JSON.parse(text);
+      tmdWarningsCache[provinceName] = { data, ts: Date.now() };
+      res.json(data);
     } catch {
-      console.warn('TMD returned non-JSON response, using mock fallback');
+      console.warn(`TMD warnings non-JSON (HTTP ${r.status}): ${text.slice(0, 120)} — cached empty for 5 min`);
+      tmdWarningsCache[provinceName] = { data: { Warning: [] }, ts: Date.now() };
       res.json({ Warning: [] });
     }
   } catch (err) {
-    console.warn(`TMD warnings error: ${err.message}, using mock fallback`);
+    console.warn(`TMD warnings error: ${err.message}`);
+    tmdWarningsCache[provinceName] = { data: { Warning: [] }, ts: Date.now() };
     res.json({ Warning: [] });
   }
 });
@@ -987,12 +1005,54 @@ app.get('/api/radar-rain-at', async (req, res) => {
 });
 
 
+// B200 health cache — re-probe every 30s so /health stays fast
+let b200HealthCache = { status: 'unknown', models: null, ts: 0 };
+const B200_HEALTH_TTL = 60_000;  // passive probe every 60s (reduced load on Cloudflare tunnel)
+
+// Called by predictRouteRiskML on every successful/failed ML call — primary signal
+function reportB200Result(ok, models = null) {
+  const next = ok ? 'online' : 'offline';
+  if (b200HealthCache.status !== next) console.log(`[B200] ${b200HealthCache.status} → ${next} (via predict_risk)`);
+  b200HealthCache = { status: next, models: models ?? b200HealthCache.models, ts: Date.now() };
+}
+
+async function probeB200() {
+  // Skip probe if a predict_risk call already updated the cache within the last 30s
+  if (Date.now() - b200HealthCache.ts < 30_000 && b200HealthCache.status !== 'unknown') return;
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 5000);
+    const r = await fetch(`${ML_INFERENCE_URL}/predict_risk`, {
+      method: 'POST',
+      headers: mlHeaders(),
+      body: JSON.stringify({ f_flood_exposure: 0.1, f_forecast_rain: 0.1, f_historical_freq: 0.1, f_soil_moisture: 0.1 }),
+      signal: controller.signal,
+    });
+    clearTimeout(t);
+    if (!r.ok) {
+      if (b200HealthCache.status !== 'error') console.warn(`[B200 probe] HTTP ${r.status} → offline`);
+      b200HealthCache = { status: 'error', models: null, ts: Date.now() }; return;
+    }
+    const d = await r.json();
+    const next = d.status === 'success' ? 'online' : 'error';
+    if (b200HealthCache.status !== next) console.log(`[B200 probe] ${b200HealthCache.status} → ${next}`);
+    b200HealthCache = { status: next, models: b200HealthCache.models, ts: Date.now() };
+  } catch (e) {
+    if (b200HealthCache.status !== 'offline') console.warn(`[B200 probe] exception → offline: ${e.message}`);
+    b200HealthCache = { status: 'offline', models: null, ts: Date.now() };
+  }
+}
+probeB200();
+setInterval(probeB200, B200_HEALTH_TTL);
+
 app.get('/health', (_req, res) => {
   res.json({
     status: 'OK',
     services: {
       supabase: supabase ? 'connected' : 'offline',
       typhoon: typhoon ? 'connected' : 'offline',
+      b200: b200HealthCache.status,
+      b200Models: b200HealthCache.models,
     },
   });
 });
@@ -1186,6 +1246,9 @@ ${routeContextStr}`;
 });
 
 // AI Situation Briefing (Typhoon)
+// Deduplication: if a briefing is already in-flight for same province, wait for it
+const briefingInFlight = {};
+
 app.get('/api/ai/briefing', async (req, res) => {
   if (!typhoon) {
     return res.json({
@@ -1193,17 +1256,26 @@ app.get('/api/ai/briefing', async (req, res) => {
       typhoonStatus: 'offline', fallbackReason: 'TYPHOON_API_KEY not configured',
     });
   }
+  const province = req.query.province || 'เชียงราย';
+  if (briefingInFlight[province]) {
+    try {
+      const result = await briefingInFlight[province];
+      return res.json(result);
+    } catch {
+      return res.json({ briefing: null, alert_level: 1, generated_at: null, typhoonStatus: 'offline', fallbackReason: 'dedup wait failed' });
+    }
+  }
 
   const [weather, traffic, gistdaFeatures, freqFeatA, freqFeatB, freqFeatC, rain72hMap, waterLevels] = await Promise.all([
     fetchLiveWeather(), fetchLiveTraffic(), fetchGistdaCurrentFlood(),
     fetchFloodFreqFeatures('A'), fetchFloodFreqFeatures('B'), fetchFloodFreqFeatures('C'),
-    fetchRain72h(), fetchWaterLevels(req.query.province || 'เชียงราย')
+    fetchRain72h(), fetchWaterLevels(province)
   ]);
   const freqFeatMap = { A: freqFeatA, B: freqFeatB, C: freqFeatC };
 
-  const isChiangRai = (!req.query.province || req.query.province === 'เชียงราย');
+  const isChiangRai = (!province || province === 'เชียงราย');
   const routeRisks = {};
-  
+
   if (isChiangRai) {
     const riskPromises = Object.entries(FLOOD_ROUTE_GEOMETRY).map(async ([id, geo]) => {
       const points   = geo.coords.map(([lon, lat]) => ({ lat, lon }));
@@ -1218,7 +1290,6 @@ app.get('/api/ai/briefing', async (req, res) => {
 
   const context = buildContext(weather, isChiangRai ? traffic : null, Object.keys(routeRisks).length > 0 ? routeRisks : null, waterLevels, rainRadarCache);
 
-  // alert_level from live sensor data (independent of AI)
   let alert_level = 1;
   if (traffic) {
     if (traffic.C?.congestion_level === 'blocked' || traffic.B?.congestion_level === 'blocked') alert_level = 3;
@@ -1226,39 +1297,38 @@ app.get('/api/ai/briefing', async (req, res) => {
   }
   if (weather?.rain != null && weather.rain > 15) alert_level = Math.max(alert_level, 2);
 
-  // Wrap Typhoon call in AbortController so a socket close / timeout is caught cleanly
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 20_000);   // 20 s hard cap
-  try {
-    const completion = await typhoon.chat.completions.create(
-      {
-        model: 'typhoon-v2.5-30b-a3b-instruct',
-        messages: [
-          { role: 'system', content: `คุณคือระบบสรุปสถานการณ์ภัยพิบัติจังหวัด${req.query.province || 'เชียงราย'} สรุป 3-4 ประโยคภาษาไทย ระบุสภาพอากาศ จราจร และแนะนำเส้นทาง อิง CONTEXT เท่านั้น` },
-          { role: 'user', content: `[CONTEXT]\n${context}\n\nสรุปสถานการณ์:` },
-        ],
-        max_tokens: 300,
-        temperature: 0.6,
-      },
-      { signal: ctrl.signal },
-    );
-    clearTimeout(timer);
-    const briefing = completion.choices[0].message.content.trim();
-    res.json({ briefing, generated_at: new Date().toISOString(), alert_level, typhoonStatus: 'live' });
-  } catch (error) {
-    clearTimeout(timer);
-    const isTimeout = error.name === 'AbortError' || error.code === 'ECONNRESET' || error.message?.includes('socket');
-    const reason    = isTimeout ? 'Typhoon API timeout / socket closed' : error.message;
-    console.error('Typhoon briefing error:', reason);
-    // Return alert_level from live sensors even when AI fails — never block UI
-    res.json({
-      briefing: null,
-      alert_level,
-      generated_at: null,
-      typhoonStatus: 'offline',
-      fallbackReason: reason,
-    });
-  }
+  const timer = setTimeout(() => ctrl.abort(), 30_000);   // raised to 30s
+  const work = (async () => {
+    try {
+      const completion = await typhoon.chat.completions.create(
+        {
+          model: 'typhoon-v2.5-30b-a3b-instruct',
+          messages: [
+            { role: 'system', content: `คุณคือระบบสรุปสถานการณ์ภัยพิบัติจังหวัด${province} สรุป 3-4 ประโยคภาษาไทย ระบุสภาพอากาศ จราจร และแนะนำเส้นทาง อิง CONTEXT เท่านั้น` },
+            { role: 'user', content: `[CONTEXT]\n${context}\n\nสรุปสถานการณ์:` },
+          ],
+          max_tokens: 300,
+          temperature: 0.6,
+        },
+        { signal: ctrl.signal },
+      );
+      clearTimeout(timer);
+      const briefingText = completion.choices[0].message.content.trim();
+      return { briefing: briefingText, generated_at: new Date().toISOString(), alert_level, typhoonStatus: 'live' };
+    } catch (error) {
+      clearTimeout(timer);
+      const isTimeout = error.name === 'AbortError' || error.code === 'ECONNRESET' || error.message?.includes('socket');
+      const reason    = isTimeout ? 'Typhoon API timeout / socket closed' : error.message;
+      console.error('Typhoon briefing error:', reason);
+      return { briefing: null, alert_level, generated_at: null, typhoonStatus: 'offline', fallbackReason: reason };
+    } finally {
+      delete briefingInFlight[province];
+    }
+  })();
+
+  briefingInFlight[province] = work;
+  res.json(await work);
 });
 
 // GISTDA Open Data Flood proxy — api-gateway.gistda.or.th (real endpoint, confirmed from JS bundle)
@@ -1563,8 +1633,7 @@ function blockedDetails(points, blockedPoints) {
 }
 
 // Score precomputed A/B/C routes and return as dynamic-route shape (OSRM failure fallback).
-// weather is already fetched at the request midpoint by the caller.
-async function buildFixedFallbackRoutes(weather, gistdaFeatures, damLevels) {
+async function buildFixedFallbackRoutes(_weather, gistdaFeatures, damLevels) {
   const rain72hMap = await fetchRain72h();  // uses cached A/B/C midpoints
   const [freqFeatA, freqFeatB, freqFeatC] = await Promise.all(
     ['A', 'B', 'C'].map(fetchFloodFreqFeatures)
@@ -1613,7 +1682,6 @@ async function buildFixedFallbackRoutes(weather, gistdaFeatures, damLevels) {
 // ── Routing engine constants ────────────────────────────────────────────────────
 // ROUTING_SERVICE_URL: Railway service URL in production, localhost for local dev
 const LOCAL_GRAPH_URL = process.env.ROUTING_SERVICE_URL || 'http://localhost:3002';
-const LIMITATIONS_LOCAL  = 'Blocked points cause graph-level edge penalties in the local road network. Alternative routes avoid blocked zones where possible.';
 const LIMITATIONS_OSRM   = 'Blocked points are applied as post-route risk penalties, not graph-level edge removals. Route geometry may still pass through blocked zones.';
 const LIMITATIONS_FIXED  = 'Using precomputed A/B/C routes — no custom start/end or real-time routing available.';
 
@@ -1690,11 +1758,11 @@ async function scoreRawRoutes(rawRoutes, weather, gistdaFeatures, _rain72hAvg, d
     };
   }));
 }
-app.get('/api/ml-metrics', async (req, res) => {
+app.get('/api/ml-metrics', async (_req, res) => {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 3000);
-    const response = await fetch(`${ML_INFERENCE_URL}/metrics`, { signal: controller.signal });
+    const response = await fetch(`${ML_INFERENCE_URL}/metrics`, { headers: mlHeaders(), signal: controller.signal });
     clearTimeout(timeout);
     
     if (response.ok) {
@@ -1870,7 +1938,7 @@ app.post('/api/detect-cctv', async (req, res) => {
     console.log(`[API] Forward the image URL to the Python VM (FastAPI) running YOLOv8`);
     const response = await fetch(`${ML_INFERENCE_URL}/detect_cctv`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: mlHeaders(),
       body: JSON.stringify({ image_url }),
     });
     
@@ -1896,7 +1964,7 @@ app.get('/api/stream-cctv', (req, res) => {
     const targetUrl = new URL(`${ML_INFERENCE_URL}/stream_cctv?url=${encodeURIComponent(url)}`);
     const lib = targetUrl.protocol === 'https:' ? https : http;
     
-    const proxyReq = lib.request(targetUrl, (proxyRes) => {
+    const proxyReq = lib.request(targetUrl, { headers: mlHeaders() }, (proxyRes) => {
       res.writeHead(proxyRes.statusCode, proxyRes.headers);
       proxyRes.pipe(res);
     });
@@ -1913,6 +1981,30 @@ app.get('/api/stream-cctv', (req, res) => {
 });
 
 // ── GISTDA flood-freq values (per route, from /features/flood-freq bbox PiP) ────
+// Return raw flood-freq polygon features with geometry — for map rendering
+app.get('/api/gistda/flood-freq-polygons', async (req, res) => {
+  try {
+    const provinceName = req.query.province || 'เชียงราย';
+    const pInfo = PROVINCES[provinceName];
+    if (!pInfo) return res.json({ count: 0, features: [] });
+
+    const dataKey = process.env.VITE_GISTDA_DATA_KEY || process.env.GISTDA_API_KEY;
+    const url = `https://api-gateway.gistda.or.th/api/2.0/resources/features/flood-freq?pv_idn=${pInfo.pv_idn}&limit=5000`;
+    
+    const r = await fetchWithTimeout(url, { headers: { 'API-Key': dataKey } }, 15000);
+    if (!r.ok) return res.json({ count: 0, features: [] });
+    
+    const j = await r.json();
+    const features = (j.features || []).filter(f => f.geometry);
+    
+    console.log(`[API] 📊 flood-freq API called for province: "${provinceName}", returning ${features.length} features.`);
+    res.json({ count: features.length, features });
+  } catch (err) {
+    console.error('Error fetching province flood-freq-polygons:', err.message);
+    res.json({ count: 0, features: [] });
+  }
+});
+
 app.get('/api/gistda/flood-freq-values', async (_req, res) => {
   const [fA, fB, fC] = await Promise.all(['A','B','C'].map(fetchFloodFreqFeatures));
   const DUMMY_POINTS = { A: FLOOD_ROUTE_GEOMETRY.A.coords, B: FLOOD_ROUTE_GEOMETRY.B.coords, C: FLOOD_ROUTE_GEOMETRY.C.coords };
@@ -1936,6 +2028,8 @@ app.get('/api/vehicles/logs', (_req, res) => {
   ];
   res.json(logs);
 });
+
+
 
 // ── Data Pipeline (Feature 4) ────────────────────────────────────────────────
 const logSnapshot = async () => {

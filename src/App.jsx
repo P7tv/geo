@@ -1,4 +1,10 @@
 import { useState, useEffect, useRef, Fragment } from 'react';
+import { renderToString } from 'react-dom/server';
+import { 
+  Map as MapIcon, Layers, Route, Bot, Siren, ShieldAlert, Navigation, 
+  Hospital, Shield, Home, Users, Circle, Droplets, Camera, MapPin, Flag, Ban,
+  AlertTriangle, CheckCircle, Info, Printer
+} from 'lucide-react';
 import './index.css';
 
 import { getVehicleRouteSummary, getAiBriefing, getTerminalLogs } from './services/vehicleApi';
@@ -160,17 +166,28 @@ const FLOOD_WMS = {
 };
 
 const SHELTER_ICONS = {
-  hospital:     { emoji: '🏥', color: 'rgba(59,130,246,0.8)'  },
-  fire_station: { emoji: '🚒', color: 'rgba(239,68,68,0.8)'   },
-  police:       { emoji: '🚔', color: 'rgba(29,111,206,0.8)'  },
-  shelter:      { emoji: '🏠', color: 'rgba(34,197,94,0.8)'   },
-  assembly_point:{ emoji: '👥', color: 'rgba(245,158,11,0.8)' },
+  hospital:     { emoji: renderToString(<Hospital size={16} />), color: 'rgba(59,130,246,0.8)'  },
+  fire_station: { emoji: renderToString(<ShieldAlert size={16} />), color: 'rgba(239,68,68,0.8)'   },
+  police:       { emoji: renderToString(<Shield size={16} />), color: 'rgba(29,111,206,0.8)'  },
+  shelter:      { emoji: renderToString(<Home size={16} />), color: 'rgba(34,197,94,0.8)'   },
+  assembly_point:{ emoji: renderToString(<Users size={16} />), color: 'rgba(245,158,11,0.8)' },
 };
 
-const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, waterLevels, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback, isMissionMode, mapRedrawTick, setSelectedCamera }) => {
+const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, floodFreqPolygons, shelters, waterLevels, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback, isMissionMode, mapRedrawTick, setSelectedCamera }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null, radarLayer: null, waterMarkers: [], dynLines: [], dynMarkers: [] });
+
+  // Extract underlying MapLibre GL instance from Sphere SDK wrapper — reused by multiple effects
+  const getML = (sm) => {
+    for (const key of ['map', '_map', 'renderer', '_renderer', 'maplibre']) {
+      if (sm?.[key]?.addSource) return sm[key];
+    }
+    for (const key of Object.keys(sm ?? {})) {
+      if (sm[key] && typeof sm[key] === 'object' && typeof sm[key].addSource === 'function') return sm[key];
+    }
+    return null;
+  };
   const clickModeRef   = useRef(clickMode);
   const onMapClickRef  = useRef(onMapClick);
   const [loading, setLoading] = useState(true);
@@ -184,6 +201,34 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
       if (p) mapInstance.current.location({ lon: p.lon, lat: p.lat }, 11);
     }
   }, [selectedProvince]);
+
+  // Handle map type changes (Normal, Satellite, Traffic)
+  useEffect(() => {
+    if (!mapInstance.current || !window.sphere) return;
+    try {
+      if (activeMapType === 'satellite') {
+        const satLayer = window.sphere.Layers.IMAGES || window.sphere.Layers.HYBRID;
+        if (satLayer) mapInstance.current.Layers.setBase(satLayer);
+        if (window.sphere.Layers.TRAFFIC) mapInstance.current.Layers.remove(window.sphere.Layers.TRAFFIC);
+        if (window.sphere.Overlays.cameras) mapInstance.current.Overlays.unload(window.sphere.Overlays.cameras);
+        if (window.sphere.Overlays.incidents) mapInstance.current.Overlays.unload(window.sphere.Overlays.incidents);
+      } else if (activeMapType === 'traffic') {
+        const baseLayer = window.sphere.Layers.STREETS || window.sphere.Layers.SIMPLE;
+        if (baseLayer) mapInstance.current.Layers.setBase(baseLayer);
+        if (window.sphere.Layers.TRAFFIC) mapInstance.current.Layers.add(window.sphere.Layers.TRAFFIC);
+        if (window.sphere.Overlays.cameras) mapInstance.current.Overlays.load(window.sphere.Overlays.cameras);
+        if (window.sphere.Overlays.incidents) mapInstance.current.Overlays.load(window.sphere.Overlays.incidents);
+      } else {
+        const baseLayer = window.sphere.Layers.STREETS || window.sphere.Layers.SIMPLE;
+        if (baseLayer) mapInstance.current.Layers.setBase(baseLayer);
+        if (window.sphere.Layers.TRAFFIC) mapInstance.current.Layers.remove(window.sphere.Layers.TRAFFIC);
+        if (window.sphere.Overlays.cameras) mapInstance.current.Overlays.unload(window.sphere.Overlays.cameras);
+        if (window.sphere.Overlays.incidents) mapInstance.current.Overlays.unload(window.sphere.Overlays.incidents);
+      }
+    } catch (err) {
+      console.warn("Could not change map layer:", err);
+    }
+  }, [activeMapType]);
 
   // Keep both refs in sync — click handler closure reads from refs, not props directly
   useEffect(() => { clickModeRef.current  = clickMode;  }, [clickMode]);
@@ -203,6 +248,7 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
             center: { lon: PROVINCES[selectedProvince].lon, lat: PROVINCES[selectedProvince].lat },
             zoom: 11,
           });
+          window.debugMap = mapInstance.current;
           // Wire map click → dynamic routing point capture (use refs so handler is never stale)
           mapInstance.current.Event.bind('click', (e) => {
             if (!clickModeRef.current) return;
@@ -224,7 +270,13 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
         setMapError(true);
       }
     }, 100);
-    return () => clearInterval(t);
+    return () => {
+      clearInterval(t);
+      if (mapInstance.current) {
+        // Clear instance on unmount to survive HMR React Fast Refresh
+        mapInstance.current = null;
+      }
+    };
   }, []); // empty deps — map binds once; refs handle dynamic state
 
   useEffect(() => {
@@ -363,27 +415,50 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
   }, [incidents, toggles.history, isMissionMode, mapRedrawTick]);
 
 
-  // GISTDA flood-freq WMS layer — switches based on histFreqRange
+  // GISTDA flood-freq polygons — rendered from Open Data API (not WMS)
+  // flood-freq polygon layer — uses MapLibre GL directly (bypasses Sphere SDK) same pattern as rain radar
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
-    if (layersRef.current.floodFreqLayer) {
-      mapInstance.current.Layers.remove(layersRef.current.floodFreqLayer);
+    const ml = getML(mapInstance.current);
+
+    const cleanup = () => {
+      try { if (ml?.getLayer('flood-freq-line')) ml.removeLayer('flood-freq-line'); } catch {}
+      try { if (ml?.getLayer('flood-freq-fill')) ml.removeLayer('flood-freq-fill'); } catch {}
+      try { if (ml?.getSource('flood-freq-source')) ml.removeSource('flood-freq-source'); } catch {}
       layersRef.current.floodFreqLayer = null;
-    }
-    if (!toggles.histFreq) return;
-    const wms = FLOOD_WMS[histFreqRange];
-    if (!wms) return;
-    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY;
-    const layer = new window.sphere.Layer(`freq-wms-${histFreqRange}`, {
-      type: window.sphere.LayerType.WMS,
-      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
-      extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
-      zoomRange: { min: 1, max: 20 },
-      zIndex: 3,
+    };
+
+    cleanup();
+    if (!toggles.histFreq || !floodFreqPolygons.length || !ml) return;
+
+    // Precompute fill/line colors in JS — avoid complex MapLibre expressions that break on older SDK
+    const features = floodFreqPolygons.map(feat => {
+      const freq = feat.properties?.freq ?? feat.freq ?? 1;
+      const t = Math.min(freq / 14, 1);
+      const hex = t > 0.7 ? '#7c3aed' : t > 0.4 ? '#2563eb' : '#60a5fa';
+      const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
+      return {
+        ...feat,
+        properties: {
+          ...feat.properties,
+          cFill: `rgba(${r},${g},${b},${(0.08 + t * 0.25).toFixed(2)})`,
+          cLine: `rgba(${r},${g},${b},0.55)`,
+        },
+      };
     });
-    mapInstance.current.Layers.add(layer);
-    layersRef.current.floodFreqLayer = layer;
-  }, [toggles.histFreq, histFreqRange, isMissionMode, mapRedrawTick]);
+
+    try {
+      ml.addSource('flood-freq-source', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features },
+      });
+      ml.addLayer({ id: 'flood-freq-fill', type: 'fill',   source: 'flood-freq-source', paint: { 'fill-color': ['get', 'cFill'], 'fill-antialias': false } });
+      ml.addLayer({ id: 'flood-freq-line', type: 'line',   source: 'flood-freq-source', paint: { 'line-color': ['get', 'cLine'], 'line-width': 0.7 } });
+      layersRef.current.floodFreqLayer = 'ml';
+    } catch (err) {
+      console.warn('[flood-freq] MapLibre add failed:', err.message);
+    }
+  }, [toggles.histFreq, floodFreqPolygons, isMissionMode, mapRedrawTick]);
 
   // GISTDA flood WMS layer — switches based on floodRange
   useEffect(() => {
@@ -433,18 +508,6 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
 
-    // Find the underlying MapLibre map instance
-    const getML = (sm) => {
-      for (const key of ['map', '_map', 'renderer', '_renderer', 'maplibre']) {
-        if (sm[key]?.addSource) return sm[key];
-      }
-      // Fallback: scan own properties for object with addSource
-      for (const key of Object.keys(sm)) {
-        if (sm[key] && typeof sm[key] === 'object' && typeof sm[key].addSource === 'function') return sm[key];
-      }
-      return null;
-    };
-
     const ml = getML(mapInstance.current);
 
     // Cleanup helper
@@ -488,7 +551,8 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
     waterLevels.forEach(st => {
       if (!st.lat || !st.lon) return;
       const levelClass = st.situation_level === 3 ? 'danger' : st.situation_level === 2 ? 'warn' : 'safe';
-      const emoji = st.situation_level === 3 ? '🔴' : st.situation_level === 2 ? '🟡' : '🟢';
+      const colorHex = st.situation_level === 3 ? '#ef4444' : st.situation_level === 2 ? '#f59e0b' : '#22c55e';
+      const emoji = renderToString(<Droplets fill={colorHex} color={colorHex} size={12} />);
       const html = `<div class="water-marker" style="pointer-events:none; background:var(--bg-1); border:2px solid var(--${levelClass}); border-radius:12px; padding:2px 6px; font-size:10px; color:var(--text-1); white-space:nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.3);"><span>${emoji}</span> ${st.name}</div>`;
       
       const marker = new window.sphere.Marker(
@@ -543,8 +607,7 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
     
-    // 1. Native Longdo Cameras (may be sparse or require Traffic mode)
-    mapInstance.current.Overlays.load(window.sphere.Overlays.cameras);
+    // 1. Native Longdo Cameras are now handled in activeMapType hook
 
     // 2. Mock Tactical Cameras for Demo (Chiang Rai)
     const mockCameras = [
@@ -616,7 +679,7 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
       )}
       {mapError && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(248,250,252,0.95)', zIndex: 1000, fontFamily: 'sans-serif', padding: 20, textAlign: 'center' }}>
-          <span style={{ fontSize: 32, marginBottom: 12 }}>⚠️</span>
+          <AlertTriangle size={32} color="#f59e0b" style={{marginBottom: 12}} />
           <strong style={{ fontSize: 14, color: 'var(--danger)', marginBottom: 8 }}>การเชื่อมต่อแผนที่ขัดข้อง</strong>
           <p style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 280, lineHeight: 1.6 }}>ไม่สามารถโหลด GISTDA SDK กรุณาเช็ค VITE_GISTDA_MAP_KEY ใน .env</p>
         </div>
@@ -628,9 +691,11 @@ const SphereMap = ({ selectedProvince, activeRoute, allRoutesData, stationData, 
 // ============================================================
 export default function App() {
   const [selectedProvince, setSelectedProvince] = useState('เชียงราย');
+  const [activeMapType, setActiveMapType] = useState('map'); // 'map', 'satellite', 'traffic'
   const [simulationRainMultiplier, setSimulationRainMultiplier] = useState(1.0);
   const [activeRoute, setActiveRoute] = useState('A');
   const [activeTab, setActiveTab] = useState('cockpit'); // Routing tab state
+  const [mobileActivePanel, setMobileActivePanel] = useState('map'); // 'map', 'left', 'right', 'chat'
   const [isMissionMode, setIsMissionMode] = useState(false);
   const [showBenchmark, setShowBenchmark] = useState(false);
   const [mapRedrawTick, setMapRedrawTick] = useState(0);
@@ -681,6 +746,25 @@ export default function App() {
   const [chatInput, setChatInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
 
+  const [b200Status, setB200Status] = useState('checking'); // 'online' | 'offline' | 'error' | 'checking'
+  const [b200Models, setB200Models] = useState(null);
+  useEffect(() => {
+    const probe = async () => {
+      try {
+        const r = await fetch('/health');
+        if (!r.ok) { setB200Status('error'); return; }
+        const d = await r.json();
+        setB200Status(d.services?.b200 ?? 'offline');
+        setB200Models(d.services?.b200Models ?? null);
+      } catch {
+        setB200Status('offline');
+      }
+    };
+    probe();
+    const t = setInterval(probe, 30_000);
+    return () => clearInterval(t);
+  }, []);
+
   const [earlyWarning, setEarlyWarning] = useState(null);
   useEffect(() => {
     const fetchWarning = async () => {
@@ -699,7 +783,8 @@ export default function App() {
   }, [selectedProvince]);
 
   const [gistdaRiskPoints, setGistdaRiskPoints] = useState(CR_RISK_POINTS);
-  const [gistdaLive, setGistdaLive] = useState(false); // true only when API returned (even empty)
+  const [gistdaLive, setGistdaLive] = useState(false);
+  const [floodFreqPolygons, setFloodFreqPolygons] = useState([]);
 
   // External data sources
   const [waterLevels, setWaterLevels]       = useState(null);
@@ -861,35 +946,52 @@ export default function App() {
       if (features.length === 0) {
         addToast(`GISTDA: ไม่พบพื้นที่น้ำท่วม (${range})`, 'info');
         setGistdaRiskPoints([]); // clear hardcoded fallback
-        return;
-      }
-      const pts = features.map(f => {
-        const p = f.properties ?? {};
-        // คำนวณ centroid จาก geometry สำหรับ fallback marker
-        let lon = null, lat = null;
-        if (f.geometry?.type === 'Point') {
-          [lon, lat] = f.geometry.coordinates;
-        } else if (f.geometry?.coordinates) {
-          const ring = f.geometry.coordinates[0];
-          const lons = ring.map(c => c[0]);
-          const lats = ring.map(c => c[1]);
-          lon = lons.reduce((a, b) => a + b, 0) / lons.length;
-          lat = lats.reduce((a, b) => a + b, 0) / lats.length;
+        // Removed early return so it can continue fetching flood-freq
+      } else {
+        const pts = features.map(f => {
+          const p = f.properties ?? {};
+          // คำนวณ centroid จาก geometry สำหรับ fallback marker
+          let lon = null, lat = null;
+          if (f.geometry?.type === 'Point') {
+            [lon, lat] = f.geometry.coordinates;
+          } else if (f.geometry?.coordinates) {
+            const ring = f.geometry.coordinates[0];
+            const lons = ring.map(c => c[0]);
+            const lats = ring.map(c => c[1]);
+            lon = lons.reduce((a, b) => a + b, 0) / lons.length;
+            lat = lats.reduce((a, b) => a + b, 0) / lats.length;
+          }
+          return {
+            name:     p.tb_tn || p.ap_tn || p.pv_tn || 'GISTDA',
+            tb_idn:   p.tb_idn,
+            ap_idn:   p.ap_idn,
+            lat, lon,
+            severity: parseFloat(p.area_rai ? Math.min(p.area_rai / 10000, 1) : 0.8),
+            geometry: f.geometry ?? null,
+          };
+        }).filter(pt => pt.lat && pt.lon);
+        if (pts.length > 0) {
+          setGistdaRiskPoints(pts);
+          addToast(`ดึงข้อมูลจุดเสี่ยงน้ำท่วม GISTDA สำเร็จ (${pts.length} พื้นที่)`, 'success');
         }
-        return {
-          name:     p.tb_tn || p.ap_tn || p.pv_tn || 'GISTDA',
-          tb_idn:   p.tb_idn,
-          ap_idn:   p.ap_idn,
-          lat, lon,
-          severity: parseFloat(p.area_rai ? Math.min(p.area_rai / 10000, 1) : 0.8),
-          geometry: f.geometry ?? null,
-        };
-      }).filter(pt => pt.lat && pt.lon);
-      if (pts.length > 0) {
-        setGistdaRiskPoints(pts);
-        addToast(`ดึงข้อมูลจุดเสี่ยงน้ำท่วม GISTDA สำเร็จ (${pts.length} พื้นที่)`, 'success');
       }
     } catch (_) {}
+
+    // Flood-freq polygons for histFreq layer
+    try {
+      const url = `/api/gistda/flood-freq-polygons?province=${encodeURIComponent(selectedProvince)}`;
+      console.log('[DEBUG] Fetching flood-freq from:', url);
+      const r = await fetch(url);
+      const d = await r.json();
+      console.log('[DEBUG] flood-freq response:', d);
+      if (d.features?.length) {
+        setFloodFreqPolygons(d.features);
+      } else {
+        console.warn('[DEBUG] flood-freq returned 0 features.');
+      }
+    } catch (err) {
+      console.error('[DEBUG] flood-freq fetch failed:', err);
+    }
   };
 
   const fetchRegionalWeather = async () => {
@@ -1091,9 +1193,9 @@ export default function App() {
     const trafficInt  = setInterval(fetchVehicleData, 15000);
     const briefInt    = setInterval(fetchBriefing, 10 * 60 * 1000);
     const logsInt     = setInterval(fetchLogs, 10000);
-    const waterInt    = setInterval(() => getWaterLevels().then(d => { if (d) setWaterLevels(d); }), 5 * 60 * 1000);
-    const damInt      = setInterval(() => getDamLevels().then(d   => { if (d) setDamLevels(d); }),   5 * 60 * 1000);
-    const warnInt     = setInterval(() => getTmdWarnings().then(d => { if (d) setTmdWarnings(d); }), 10 * 60 * 1000);
+    const waterInt    = setInterval(() => getWaterLevels(provinceRef.current).then(d => { if (d) setWaterLevels(d); }), 5 * 60 * 1000);
+    const damInt      = setInterval(() => getDamLevels(provinceRef.current).then(d   => { if (d) setDamLevels(d); }),   5 * 60 * 1000);
+    const warnInt     = setInterval(() => getTmdWarnings(provinceRef.current).then(d => { if (d) setTmdWarnings(d); }), 10 * 60 * 1000);
 
     return () => {
       clearInterval(clockInt); clearInterval(trafficInt); clearInterval(briefInt);
@@ -1335,7 +1437,7 @@ export default function App() {
       <div className="toast-container">
         {toasts.map(t => (
           <div key={t.id} className={`toast-v2 ${t.type === 'success' ? 'success' : t.type === 'warn' ? 'warn' : ''}`}>
-            <span>{t.type === 'success' ? '✓' : t.type === 'warn' ? '⚠' : '●'}</span>
+            <span>{t.type === 'success' ? <CheckCircle size={14}/> : t.type === 'warn' ? <AlertTriangle size={14}/> : <Info size={14}/>}</span>
             <span>{t.text}</span>
           </div>
         ))}
@@ -1359,26 +1461,7 @@ export default function App() {
         </select>
         <div className="header-div" />
 
-        
-        <button 
-          onClick={() => {
-            if (routeMode === 'dynamic' && dynRoutes.length === 0) {
-              addToast('กรุณาสร้างเส้นทางบนแผนที่ (Dynamic Routing) ก่อนเริ่มปฏิบัติการ', 'warn');
-            } else {
-              setIsMissionMode(true);
-            }
-          }}
-          style={{
-            background: 'var(--danger)', color: '#fff', border: 'none',
-            padding: '6px 12px', borderRadius: '4px', fontWeight: 'bold',
-            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
-            animation: 'pulse 2s infinite'
-          }}
-        >
-          🚨 เริ่มปฏิบัติการ (Mission Mode)
-        </button>
 
-        <div className="header-div" />
 
         <div className="header-weather">
           <div className="weather-pill" style={{ background: 'transparent', border: 'none', color: 'var(--text-2)', padding: '0 8px', fontWeight: 600 }}>
@@ -1404,6 +1487,27 @@ export default function App() {
         </div>
 
         <div className="header-right">
+          {(() => {
+            const isPending = b200Status === 'checking' || b200Status === 'unknown';
+            const isOnline  = b200Status === 'online';
+            return (
+              <div
+                title={isOnline
+                  ? `B200 ML Online${b200Models ? ` — XGB:${b200Models.xgboost ? '✓' : '✗'} RF:${b200Models.random_forest ? '✓' : '✗'} LR:${b200Models.logistic_regression ? '✓' : '✗'} ISO:${b200Models.isolation_forest ? '✓' : '✗'}` : ''}`
+                  : isPending ? 'กำลังตรวจสอบ B200...' : 'B200 ML Offline — ใช้ rule-based fallback'}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap', flexShrink: 0,
+                  fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 4, cursor: 'default',
+                  background: isOnline ? 'rgba(34,197,94,0.12)' : isPending ? 'rgba(100,116,139,0.1)' : 'rgba(239,68,68,0.1)',
+                  color:      isOnline ? 'var(--safe)'           : isPending ? 'var(--text-3)'           : 'var(--danger)',
+                  border: `1px solid ${isOnline ? 'var(--safe)' : isPending ? 'var(--border)' : 'var(--danger)'}`,
+                }}
+              >
+                <span style={{ fontSize: 7 }}>{isOnline ? '●' : isPending ? '◌' : '○'}</span>
+                B200 {isOnline ? 'ONLINE' : isPending ? '...' : 'OFFLINE'}
+              </div>
+            );
+          })()}
           <div className={`alert-chip level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1}`}>
             <span className="status-dot live" />
             เฝ้าระวัง {alertLevel}
@@ -1427,7 +1531,7 @@ export default function App() {
 
       {earlyWarning && !isMissionMode && (
         <div className={`alert-bar level-${earlyWarning.alert_level === 'danger' ? 3 : 2} no-print`} style={{ background: earlyWarning.alert_level === 'danger' ? '#ef4444' : '#f59e0b', color: '#fff', border: 'none' }}>
-          <span>{earlyWarning.alert_level === 'danger' ? '🚨' : '⚠️'}</span>
+          <span style={{marginRight: 6, display: 'flex', alignItems: 'center'}}>{earlyWarning.alert_level === 'danger' ? <Siren size={14}/> : <AlertTriangle size={14}/>}</span>
           <span className="alert-bar-txt" style={{ fontWeight: 'bold' }}>
             {earlyWarning.message}
           </span>
@@ -1437,7 +1541,7 @@ export default function App() {
 
       {/* ── Alert bar ── */}
       <div className={`alert-bar level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1} no-print`} style={{ display: isMissionMode ? 'none' : 'flex' }}>
-        <span>{alertLevel >= 3 ? '🔴' : alertLevel === 2 ? '🟡' : '🔵'}</span>
+        <Circle fill={alertLevel >= 3 ? '#ef4444' : alertLevel === 2 ? '#f59e0b' : '#3b82f6'} color="transparent" size={14} style={{marginRight: 6}} />
         <span className="alert-bar-txt">
           {hasTmdWarning
             ? `[TMD แจ้งเตือน] ${tmdAlertText}`
@@ -1461,18 +1565,33 @@ export default function App() {
 
       {/* ── 3-Column Cockpit ── */}
       {activeTab === 'cockpit' && (
-        <div className="main-3col">
+        <div className="main-3col" data-mobile-view={mobileActivePanel}>
 
           {/* LEFT: Route cards + toggles + log */}
           <aside className="left-panel" style={{ display: isMissionMode ? 'none' : 'flex' }}>
 
             {/* Route mode toggle — outside scroll container so it never scrolls away */}
-            <div style={{ padding: '8px 10px 0', flexShrink: 0, borderBottom: '1px solid var(--border)' }}>
-              <div style={{ display: 'flex', gap: 0, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)', marginBottom: 8 }}>
-                {[['fixed','Precomputed Routes'],['dynamic','Dynamic Routing']].map(([mode, label]) => {
+            <div style={{ padding: '20px 20px 10px', flexShrink: 0 }}>
+              <div style={{ display: 'flex', gap: 4, background: 'var(--bg-panel-alt)', borderRadius: '100px', padding: 4, marginBottom: 4 }}>
+                {[['fixed','เส้นทางสำเร็จรูป'],['dynamic','คำนวณสด']].map(([mode, label]) => {
                   const isDisabled = mode === 'fixed' && selectedProvince !== 'เชียงราย';
+                  const isActive = routeMode === mode;
                   return (
-                    <button key={mode} onClick={() => { if (!isDisabled) setRouteMode(mode); }} title={isDisabled ? 'Precomputed routes are only available in Pilot Province (เชียงราย)' : ''} style={{ flex: 1, padding: '5px 0', fontSize: 10, fontWeight: 700, cursor: isDisabled ? 'not-allowed' : 'pointer', border: 'none', background: routeMode === mode ? 'var(--blue-primary)' : 'var(--bg-panel-alt)', color: routeMode === mode ? '#fff' : isDisabled ? 'var(--text-4)' : 'var(--text-3)', letterSpacing: '0.3px', opacity: isDisabled ? 0.5 : 1 }}>
+                    <button 
+                      key={mode} 
+                      onClick={() => { if (!isDisabled) setRouteMode(mode); }} 
+                      title={isDisabled ? 'Precomputed routes are only available in Pilot Province (เชียงราย)' : ''} 
+                      style={{ 
+                        flex: 1, padding: '8px 0', fontSize: 13, fontWeight: isActive ? 700 : 500, 
+                        cursor: isDisabled ? 'not-allowed' : 'pointer', border: 'none', 
+                        background: isActive ? '#fff' : 'transparent', 
+                        color: isActive ? 'var(--text-1)' : isDisabled ? 'var(--text-4)' : 'var(--text-2)', 
+                        borderRadius: '100px',
+                        boxShadow: isActive ? '0 2px 8px rgba(0,0,0,0.06)' : 'none',
+                        transition: 'all 0.2s',
+                        opacity: isDisabled ? 0.5 : 1 
+                      }}
+                    >
                       {label}
                     </button>
                   );
@@ -1518,8 +1637,8 @@ export default function App() {
                   {/* Start / End / Blocked controls */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
                     {[
-                      { key: 'start', label: '📍 จุดเริ่มต้น', mode: 'start', val: dynStart, color: '#22c55e' },
-                      { key: 'end',   label: '🏁 ปลายทาง',    mode: 'end',   val: dynEnd,   color: '#ef4444' },
+                      { key: 'start', label: <><Navigation size={12} style={{marginRight:4, verticalAlign:'text-top'}} />จุดเริ่มต้น</>, mode: 'start', val: dynStart, color: '#22c55e' },
+                      { key: 'end',   label: <><Flag size={12} style={{marginRight:4, verticalAlign:'text-top'}} />ปลายทาง</>,    mode: 'end',   val: dynEnd,   color: '#ef4444' },
                     ].map(({ key, label, mode, val, color }) => (
                       <div key={key} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                         <button
@@ -1530,20 +1649,6 @@ export default function App() {
                         {val && <button onClick={() => { if (key === 'start') setDynStart(null); else setDynEnd(null); }} style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 12, padding: 0 }}>✕</button>}
                       </div>
                     ))}
-
-                    {/* Blocked points */}
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      <button
-                        onClick={() => setMapClickMode(prev => prev === 'blocked' ? null : 'blocked')}
-                        style={{ flex: 1, padding: '4px 8px', fontSize: 10, fontWeight: 700, borderRadius: 4, cursor: 'pointer', border: `1px solid ${mapClickMode === 'blocked' ? '#f59e0b' : 'var(--border)'}`, background: mapClickMode === 'blocked' ? 'rgba(245,158,11,0.12)' : 'var(--bg-panel-alt)', color: mapClickMode === 'blocked' ? '#f59e0b' : 'var(--text-2)' }}
-                      >⛔ {mapClickMode === 'blocked' ? 'คลิกแผนที่...' : 'เพิ่มจุดปิดถนน'}</button>
-                      {dynBlocked.length > 0 && (
-                        <span style={{ fontSize: 9, color: '#f59e0b' }}>{dynBlocked.length} จุด</span>
-                      )}
-                      {dynBlocked.length > 0 && (
-                        <button onClick={() => setDynBlocked([])} style={{ background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: 11, padding: 0 }}>ล้าง</button>
-                      )}
-                    </div>
                   </div>
 
                   {/* Find routes button */}
@@ -1666,7 +1771,7 @@ export default function App() {
               {/* Placeholder — dynamic mode, no routes yet, no fallback */}
               {routeMode === 'dynamic' && simulatedDynRoutes.length === 0 && !isPrecomputedFallback && (
                 <div style={{ padding: '20px 12px', textAlign: 'center', color: 'var(--text-3)', fontSize: 11, lineHeight: 1.7 }}>
-                  <div style={{ fontSize: 22, marginBottom: 8 }}>🗺️</div>
+                  <MapIcon size={24} color="var(--text-3)" style={{ marginBottom: 8 }} />
                   <div style={{ fontWeight: 700, color: 'var(--text-2)', marginBottom: 4 }}>ยังไม่มีเส้นทาง</div>
                   <div>เลือกจุดเริ่มต้นและปลายทาง<br />แล้วกด <strong>Find Safe Routes</strong></div>
                 </div>
@@ -1934,12 +2039,38 @@ export default function App() {
 
           {/* CENTER: Map */}
           <div className="map-center">
-            <div className="map-badge-v2">
-              <span className="status-dot live" />
-              GISTDA Sphere · {new Date().toLocaleDateString('th-TH')}
+            {/* Top Left Controls */}
+            <div className="desktop-only map-floating-control" style={{ position: 'absolute', top: 16, left: 352, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'flex-start', pointerEvents: 'none' }}>
+              <div style={{ pointerEvents: 'auto', background: '#fff', borderRadius: 100, border: '1px solid var(--border)', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.05)', fontSize: 11, fontWeight: 600 }}>
+                <Circle fill="var(--safe)" size={10} color="transparent" />
+                GISTDA Sphere · {new Date().toLocaleDateString('th-TH')}
+              </div>
+
+              <button 
+                onClick={() => setMapClickMode(prev => prev === 'blocked' ? null : 'blocked')}
+                style={{ pointerEvents: 'auto', background: mapClickMode === 'blocked' ? 'var(--text-1)' : '#fff', color: mapClickMode === 'blocked' ? '#fff' : 'var(--text-1)', border: '1px solid var(--border)', borderRadius: 100, padding: '8px 20px', display: 'flex', alignItems: 'center', gap: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.08)', fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s' }}
+              >
+                <MapPin size={16} /> {mapClickMode === 'blocked' ? 'คลิกบนแผนที่...' : 'เพิ่มจุดปิดถนน'}
+              </button>
+            </div>
+
+            {/* Top Right Controls */}
+            <div className="desktop-only map-floating-control" style={{ position: 'absolute', top: 16, right: 372, zIndex: 1000, pointerEvents: 'none' }}>
+              <div style={{ pointerEvents: 'auto', background: '#fff', borderRadius: 100, border: '1px solid var(--border)', display: 'flex', padding: 4, gap: 4, boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
+                {[['map','แผนที่'],['satellite','ดาวเทียม'],['traffic','จราจร']].map(([k,v]) => (
+                  <button 
+                    key={k} 
+                    onClick={() => setActiveMapType(k)}
+                    style={{ border: 'none', borderRadius: 100, background: activeMapType === k ? 'var(--bg-panel-alt)' : 'transparent', padding: '6px 16px', fontSize: 12, fontWeight: activeMapType === k ? 700 : 500, color: activeMapType === k ? 'var(--text-1)' : 'var(--text-2)', cursor: 'pointer', transition: 'all 0.2s' }}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <SphereMap
+              activeMapType={activeMapType}
               selectedProvince={selectedProvince}
               activeRoute={activeRoute}
               allRoutesData={allRoutesData}
@@ -1948,6 +2079,7 @@ export default function App() {
               toggles={toggles}
               vehicleData={vehicleData}
               gistdaRiskPoints={gistdaRiskPoints}
+              floodFreqPolygons={floodFreqPolygons}
               shelters={shelters}
               waterLevels={waterLevels}
               floodRange={floodRange}
@@ -2210,7 +2342,7 @@ export default function App() {
                   </div>
                 ) : (
                   <div style={{ fontSize: 11, color: 'var(--text-2)', textAlign: 'center', padding: '16px 0', background: 'var(--bg-3)', borderRadius: '6px', border: '1px dashed var(--border)', marginTop: '8px' }}>
-                    <span style={{ fontSize: '18px', display: 'block', marginBottom: '4px' }}>📍📷</span>
+                    <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginBottom: 8 }}><MapPin size={20}/><Camera size={20}/></div>
                     คลิกไอคอนกล้องบนแผนที่<br/>เพื่อดูภาพสด
                   </div>
                 )}
@@ -2260,15 +2392,47 @@ export default function App() {
               </div>
 
               {/* Mission button */}
-              <button
-                className="mission-btn"
-                onClick={() => addToast('เริ่มปฏิบัติการกู้ภัยสำเร็จ', 'success')}
-              >
-                เริ่มปฏิบัติการกู้ภัย
-              </button>
+              <div style={{ padding: '0 0 10px 0', marginTop: 'auto' }}>
+                <button
+                  className="mission-btn desktop-only"
+                  onClick={() => addToast('เริ่มปฏิบัติการกู้ภัยสำเร็จ', 'success')}
+                  style={{
+                    width: '100%', background: 'var(--blue-primary)', color: '#fff', border: 'none',
+                    padding: '16px', borderRadius: '16px', fontWeight: 700, fontSize: 16,
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+                    boxShadow: '0 4px 14px rgba(37,99,235,0.4)', transition: 'transform 0.2s, box-shadow 0.2s'
+                  }}
+                  onMouseOver={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 6px 20px rgba(37,99,235,0.6)'; }}
+                  onMouseOut={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 14px rgba(37,99,235,0.4)'; }}
+                >
+                  <Shield size={20} /> เริ่มปฏิบัติการกู้ภัย
+                </button>
+              </div>
 
             </div>
           </aside>
+
+          {/* ── Mobile Bottom Navigation ── */}
+          <div className="mobile-bottom-nav">
+            <button className={`nav-btn ${mobileActivePanel === 'map' ? 'active' : ''}`} onClick={() => setMobileActivePanel('map')}>
+              <span className="icon"><MapIcon size={20} /></span><span className="label">แผนที่</span>
+            </button>
+            <button className={`nav-btn ${mobileActivePanel === 'left' ? 'active' : ''}`} onClick={() => setMobileActivePanel('left')}>
+              <span className="icon"><Layers size={20} /></span><span className="label">ข้อมูล</span>
+            </button>
+            <button className={`nav-btn ${mobileActivePanel === 'right' ? 'active' : ''}`} onClick={() => setMobileActivePanel('right')}>
+              <span className="icon"><Route size={20} /></span><span className="label">เส้นทาง</span>
+            </button>
+            <button className={`nav-btn ${mobileActivePanel === 'chat' ? 'active' : ''}`} onClick={() => setMobileActivePanel('chat')}>
+              <span className="icon"><Bot size={20} /></span><span className="label">AI</span>
+            </button>
+          </div>
+
+          {/* ── Mobile FAB Mission Button ── */}
+          <button className="fab-mission" onClick={() => addToast('เริ่มปฏิบัติการกู้ภัยสำเร็จ', 'success')}>
+            <span className="icon"><Siren size={20} /></span>
+            <span className="text">ปฏิบัติการ</span>
+          </button>
 
         </div>
       )}
@@ -2333,7 +2497,7 @@ export default function App() {
                               ? '⏳ กำลังโหลดข้อมูลจาก GISTDA API...'
                               : geoSearch
                                 ? 'ไม่พบพื้นที่ตรงกับคำค้นหา'
-                                : `✅ ไม่พบพื้นที่น้ำท่วมใน จ.${selectedProvince} จาก GISTDA Flood API ในช่วงเวลานี้`}
+                                : <><CheckCircle size={14} style={{marginRight: 4, verticalAlign: 'middle'}}/>ไม่พบพื้นที่น้ำท่วมใน จ.{selectedProvince} จาก GISTDA Flood API ในช่วงเวลานี้</>}
                           </td>
                         </tr>
                       ) : (
@@ -2661,7 +2825,7 @@ export default function App() {
                 style={{ width: 'auto', padding: '6px 20px', fontSize: '11px', margin: 0 }}
                 onClick={() => window.print()}
               >
-                🖨️ พิมพ์เอกสาร / ส่งออก PDF
+                <Printer size={14} style={{marginRight: 6}} /> พิมพ์เอกสาร / ส่งออก PDF
               </button>
             </div>
 
@@ -2670,7 +2834,7 @@ export default function App() {
               <div className="executive-briefing-pane print-area" style={{ background: '#fff', color: '#111', border: '1px solid #ddd', borderRadius: 'var(--radius-lg)' }}>
                 {/* Official seal mark */}
                 <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-                  <div style={{ fontSize: '32px', filter: 'grayscale(1) sepia(100%) hue-rotate(0deg) saturate(1000%)' }}>🛡️</div>
+                  <div style={{ marginBottom: 12 }}><ShieldAlert size={36} color="#b45309" /></div>
                   <h2 style={{ fontSize: '14px', fontWeight: '800', marginTop: '10px', color: '#000', fontFamily: 'var(--font-th)' }}>
                     รายงานสถานการณ์น้ำท่วมจังหวัด{selectedProvince} (GISTDA · TMD · DDPM)
                   </h2>

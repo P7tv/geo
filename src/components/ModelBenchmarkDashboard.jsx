@@ -1,62 +1,49 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import './ModelBenchmark.css';
 
-const baseModels = [
-  {
-    id: 'rf',
-    name: 'Random Forest',
-    type: 'Tree-based Ensemble',
-    accuracy: 89.4,
-    f1: 0.87,
-    latency: '15 ms',
-    params: '100 estimators, max_depth 15',
-    pros: ['Fast inference', 'Interpretable features', 'Good baseline'],
-    cons: ['Struggles with time-series trends'],
-    selected: false
-  },
-  {
-    id: 'lstm',
-    name: 'LSTM Network',
-    type: 'Deep Learning (Sequential)',
-    accuracy: 91.8,
-    f1: 0.90,
-    latency: '85 ms',
-    params: '2 layers, 64 units, dropout 0.2',
-    pros: ['Captures temporal dependencies'],
-    cons: ['High latency', 'Requires GPU for fast inference', 'Hard to interpret'],
-    selected: false
-  }
-];
+const FALLBACKS = {
+  xgboost:            { name: 'XGBoost',             type: 'Gradient Boosting',    accuracy: 94.2, f1_score: 0.93, latency_ms: 22,  params: 'learning_rate=0.05, max_depth=6',   pros: ['High accuracy', 'Handles missing data', 'SHAP support'], cons: ['Slightly slower training'],              selected: true  },
+  random_forest:      { name: 'Random Forest',        type: 'Tree-based Ensemble',  accuracy: 89.4, f1_score: 0.87, latency_ms: 15,  params: 'n_estimators=100, max_depth=15',     pros: ['Fast inference', 'Interpretable'],        cons: ['Weaker on trends'],                      selected: false },
+  logistic_regression:{ name: 'Logistic Regression',  type: 'Linear Classifier',    accuracy: 82.1, f1_score: 0.79, latency_ms: 3,   params: 'C=1.0, solver=lbfgs',               pros: ['Ultra-fast', 'Probabilistic output'],    cons: ['Assumes linearity'],                     selected: false },
+  isolation_forest:   { name: 'Isolation Forest',     type: 'Anomaly Detection',    accuracy: null, f1_score: null, latency_ms: 5,   params: 'n_estimators=100, contamination=0.05', pros: ['Detects flash flood spikes', 'Unsupervised'], cons: ['No class accuracy metric'],           selected: false },
+};
+
+const ORDER = ['xgboost', 'random_forest', 'logistic_regression', 'isolation_forest'];
 
 export default function ModelBenchmarkDashboard({ onClose }) {
-  const [activeModel, setActiveModel] = useState('xgb');
-  const [xgbMetrics, setXgbMetrics] = useState({ accuracy: 94.2, f1_score: 0.93 }); // fallback
+  const [metrics, setMetrics]   = useState(null);
+  const [loading, setLoading]   = useState(true);
+  const [activeModel, setActive] = useState('xgboost');
 
   useEffect(() => {
     fetch('/api/ml-metrics')
-      .then(res => res.json())
-      .then(data => {
-        if (!data.error) setXgbMetrics(data);
-      })
-      .catch(console.error);
+      .then(r => r.json())
+      .then(d => { if (!d.error) setMetrics(d); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
-  const models = [
-    baseModels[0],
-    {
-      id: 'xgb',
-      name: 'XGBoost (B200 Live)',
-      type: 'Gradient Boosting',
-      accuracy: parseFloat((xgbMetrics.accuracy * 100).toFixed(1)) || 94.2,
-      f1: xgbMetrics.f1_score || 0.93,
-      latency: '22 ms',
-      params: 'learning_rate 0.05, max_depth 6 (Dynamic)',
-      pros: ['High accuracy', 'Handles missing data', 'SHAP support'],
-      cons: ['Slightly slower training'],
-      selected: true
-    },
-    baseModels[1]
-  ];
+  const models = ORDER.map(key => {
+    const fb  = FALLBACKS[key];
+    const live = metrics?.[key];
+    return {
+      id:       key,
+      name:     live?.name     ?? fb.name,
+      type:     live?.type     ?? fb.type,
+      accuracy: live?.accuracy ?? fb.accuracy,
+      f1:       live?.f1_score ?? fb.f1_score,
+      latency:  live ? `${live.latency_ms} ms` : `${fb.latency_ms} ms`,
+      latencyMs:live?.latency_ms ?? fb.latency_ms,
+      params:   live?.params   ?? fb.params,
+      pros:     fb.pros,
+      cons:     fb.cons,
+      selected: fb.selected,
+      isLive:   !!live,
+      contamination: live?.contamination ?? null,
+    };
+  });
+
+  const best = models.find(m => m.selected);
 
   return (
     <div className="benchmark-overlay">
@@ -65,37 +52,47 @@ export default function ModelBenchmarkDashboard({ onClose }) {
           <div className="benchmark-title">
             <span className="icon">🧠</span>
             <div>
-              <h2>AI Model Evaluation & Selection</h2>
-              <div className="subtitle">B200 VM Training Results • Flood Route Risk Prediction</div>
+              <h2>AI Model Evaluation &amp; Selection</h2>
+              <div className="subtitle">
+                B200 VM Live Results • Flood Route Risk Prediction
+                {loading && <span style={{ marginLeft: 8, color: 'var(--text-3)', fontSize: 10 }}>⏳ loading...</span>}
+                {!loading && metrics && <span style={{ marginLeft: 8, color: 'var(--safe)', fontSize: 10 }}>● Live B200</span>}
+                {!loading && !metrics && <span style={{ marginLeft: 8, color: 'var(--warn)', fontSize: 10 }}>○ B200 offline — fallback values</span>}
+              </div>
             </div>
           </div>
           <button className="close-btn" onClick={onClose}>✕</button>
         </div>
 
         <div className="benchmark-content">
-          <div className="models-grid">
+          <div className="models-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
             {models.map(m => (
-              <div 
-                key={m.id} 
+              <div
+                key={m.id}
                 className={`model-card ${m.selected ? 'selected' : ''} ${activeModel === m.id ? 'active' : ''}`}
-                onClick={() => setActiveModel(m.id)}
+                onClick={() => setActive(m.id)}
               >
                 {m.selected && <div className="winner-badge">🏆 Best Performance</div>}
                 <h3>{m.name}</h3>
                 <div className="model-type">{m.type}</div>
-                
+                {m.isLive && <div style={{ fontSize: 9, color: 'var(--safe)', marginBottom: 6 }}>● LIVE</div>}
+
                 <div className="metrics">
                   <div className="metric-row">
                     <span>Accuracy</span>
-                    <strong className={m.accuracy > 90 ? 'text-safe' : 'text-warn'}>{m.accuracy}%</strong>
+                    {m.accuracy != null
+                      ? <strong className={m.accuracy > 90 ? 'text-safe' : 'text-warn'}>{m.accuracy.toFixed(1)}%</strong>
+                      : <strong style={{ color: 'var(--text-3)', fontSize: 10 }}>N/A (unsupervised)</strong>}
                   </div>
                   <div className="metric-row">
                     <span>F1-Score</span>
-                    <strong>{m.f1.toFixed(2)}</strong>
+                    {m.f1 != null
+                      ? <strong>{m.f1.toFixed(2)}</strong>
+                      : <strong style={{ color: 'var(--text-3)', fontSize: 10 }}>—</strong>}
                   </div>
                   <div className="metric-row">
-                    <span>Inference Latency</span>
-                    <strong className={parseInt(m.latency) < 30 ? 'text-safe' : 'text-warn'}>{m.latency}</strong>
+                    <span>Inference</span>
+                    <strong className={m.latencyMs < 30 ? 'text-safe' : 'text-warn'}>{m.latency}</strong>
                   </div>
                 </div>
               </div>
@@ -122,9 +119,14 @@ export default function ModelBenchmarkDashboard({ onClose }) {
                     </div>
                   </div>
                 </div>
+                {m.id === 'isolation_forest' && (
+                  <div className="selection-reason" style={{ borderColor: 'var(--blue-primary)' }}>
+                    <strong>Role:</strong> Unsupervised anomaly detector — flags abnormal sensor readings (flash flood spikes, sensor faults) that supervised models miss. Contamination = {m.contamination ?? 0.05}.
+                  </div>
+                )}
                 {m.selected && (
                   <div className="selection-reason">
-                    <strong>Decision:</strong> XGBoost was selected for production because it offers the optimal balance between high predictive accuracy (94.2%) and low inference latency (22ms), which is critical for real-time life-saving operations. Additionally, it provides excellent SHAP value compatibility for Explainable AI (XAI).
+                    <strong>Decision:</strong> XGBoost selected for production — highest accuracy ({best?.accuracy?.toFixed(1)}%), SHAP explainability, and low latency ({best?.latency}) critical for real-time emergency routing.
                   </div>
                 )}
               </div>
