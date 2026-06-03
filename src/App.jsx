@@ -415,50 +415,27 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
   }, [incidents, toggles.history, isMissionMode, mapRedrawTick]);
 
 
-  // GISTDA flood-freq polygons — rendered from Open Data API (not WMS)
-  // flood-freq polygon layer — uses MapLibre GL directly (bypasses Sphere SDK) same pattern as rain radar
+  // GISTDA flood-freq WMS layer — ใช้ GISTDA WMS โดยตรงผ่าน Sphere SDK
   useEffect(() => {
     if (!mapInstance.current || !window.sphere) return;
-    const ml = getML(mapInstance.current);
-
-    const cleanup = () => {
-      try { if (ml?.getLayer('flood-freq-line')) ml.removeLayer('flood-freq-line'); } catch {}
-      try { if (ml?.getLayer('flood-freq-fill')) ml.removeLayer('flood-freq-fill'); } catch {}
-      try { if (ml?.getSource('flood-freq-source')) ml.removeSource('flood-freq-source'); } catch {}
+    if (layersRef.current.floodFreqLayer) {
+      mapInstance.current.Layers.remove(layersRef.current.floodFreqLayer);
       layersRef.current.floodFreqLayer = null;
-    };
-
-    cleanup();
-    if (!toggles.histFreq || !floodFreqPolygons.length || !ml) return;
-
-    // Precompute fill/line colors in JS — avoid complex MapLibre expressions that break on older SDK
-    const features = floodFreqPolygons.map(feat => {
-      const freq = feat.properties?.freq ?? feat.freq ?? 1;
-      const t = Math.min(freq / 14, 1);
-      const hex = t > 0.7 ? '#7c3aed' : t > 0.4 ? '#2563eb' : '#60a5fa';
-      const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
-      return {
-        ...feat,
-        properties: {
-          ...feat.properties,
-          cFill: `rgba(${r},${g},${b},${(0.08 + t * 0.25).toFixed(2)})`,
-          cLine: `rgba(${r},${g},${b},0.55)`,
-        },
-      };
-    });
-
-    try {
-      ml.addSource('flood-freq-source', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features },
-      });
-      ml.addLayer({ id: 'flood-freq-fill', type: 'fill',   source: 'flood-freq-source', paint: { 'fill-color': ['get', 'cFill'], 'fill-antialias': false } });
-      ml.addLayer({ id: 'flood-freq-line', type: 'line',   source: 'flood-freq-source', paint: { 'line-color': ['get', 'cLine'], 'line-width': 0.7 } });
-      layersRef.current.floodFreqLayer = 'ml';
-    } catch (err) {
-      console.warn('[flood-freq] MapLibre add failed:', err.message);
     }
-  }, [toggles.histFreq, floodFreqPolygons, isMissionMode, mapRedrawTick]);
+    if (!toggles.histFreq) return;
+    const wms = FLOOD_WMS[histFreqRange];
+    if (!wms) return;
+    const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY;
+    const layer = new window.sphere.Layer(`freq-wms-${histFreqRange}`, {
+      type: window.sphere.LayerType.WMS,
+      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
+      extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
+      zoomRange: { min: 1, max: 20 },
+      zIndex: 3,
+    });
+    mapInstance.current.Layers.add(layer);
+    layersRef.current.floodFreqLayer = layer;
+  }, [toggles.histFreq, histFreqRange, isMissionMode, mapRedrawTick]);
 
   // GISTDA flood WMS layer — switches based on floodRange
   useEffect(() => {
