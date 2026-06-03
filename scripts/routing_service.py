@@ -35,8 +35,10 @@ MEMORY_LIMIT_GB   = float(os.environ.get('MEMORY_LIMIT_GB', '5.0'))
 # Set MAX_ROUTE_COUNT=3 for 3 alternatives (higher CPU/RAM — test with free memory first).
 MAX_ROUTE_COUNT   = int(os.environ.get('MAX_ROUTE_COUNT', '2'))
 MAX_BLOCKED_PTS   = 5        # hard cap
+MAX_FLOOD_PTS     = 50       # flood zone points from GISTDA live data
 BBOX_BUFFER_M     = 10_000   # 10 km buffer around start/end bbox
 BLOCKED_PENALTY   = 999_999  # metres added to penalised edges (not removed)
+FLOOD_PENALTY_MAX = 40_000   # max penalty for fully flooded edge (severity=1.0) ≈ 40km detour
 PENALTY_FACTOR    = 8        # edge weight multiply on used paths
 OVERLAP_THRESHOLD = 0.85     # node-overlap ratio → mark as similarRoute
 SPEED_KMH         = 45       # assumed average speed for duration estimate
@@ -196,18 +198,23 @@ def _extract_subgraph(lat1: float, lon1: float,
 # ── Graph construction (operates on subgraph view) ─────────────────────────────
 
 def _build_digraph(SG: nx.MultiDiGraph,
-                   blocked_points: list) -> tuple[nx.DiGraph, int]:
+                   blocked_points: list,
+                   flood_points: list | None = None) -> tuple[nx.DiGraph, int, int]:
     """
     Collapse MultiDiGraph subgraph → DiGraph with min-length edges.
-    Edges whose midpoint falls within a blockedPoint radiusM receive
-    +BLOCKED_PENALTY weight (penalised, NOT removed — routing remains possible
-    if no alternative exists within the subgraph).
 
-    Returns (DG, penalizedEdgeCount).
+    blocked_points: hard impassable zones → +BLOCKED_PENALTY (999,999 m)
+    flood_points:   soft flood risk zones  → +FLOOD_PENALTY_MAX × severity
+                    {lat, lon, radiusM, severity}  severity ∈ [0, 1]
+
+    Returns (DG, penalizedEdgeCount, floodWeightedEdgeCount).
     """
-    penalised: set = set()
+    penalised: set  = set()
+    flood_w: dict   = {}   # (u,v) → extra metres from flood risk
+
+    # Hard blocked edges
     if blocked_points:
-        for u, v, data in SG.edges(data=True):
+        for u, v, _ in SG.edges(data=True):
             ud, vd = SG.nodes[u], SG.nodes[v]
             mid_lat = (ud['y'] + vd['y']) / 2
             mid_lon = (ud['x'] + vd['x']) / 2
@@ -215,6 +222,21 @@ def _build_digraph(SG: nx.MultiDiGraph,
                 if _haversine_m(bp['lat'], bp['lon'], mid_lat, mid_lon) <= bp.get('radiusM', 500):
                     penalised.add((u, v))
                     break
+
+    # Soft flood-weighted edges (XGBoost/GISTDA risk zones)
+    if flood_points:
+        for u, v, _ in SG.edges(data=True):
+            if (u, v) in penalised:
+                continue  # already hard-blocked
+            ud, vd = SG.nodes[u], SG.nodes[v]
+            mid_lat = (ud['y'] + vd['y']) / 2
+            mid_lon = (ud['x'] + vd['x']) / 2
+            max_sev = 0.0
+            for fp in flood_points:
+                if _haversine_m(fp['lat'], fp['lon'], mid_lat, mid_lon) <= fp.get('radiusM', 300):
+                    max_sev = max(max_sev, fp.get('severity', 0.5))
+            if max_sev > 0:
+                flood_w[(u, v)] = FLOOD_PENALTY_MAX * max_sev
 
     DG = nx.DiGraph()
     DG.add_nodes_from(SG.nodes(data=True))
@@ -224,11 +246,16 @@ def _build_digraph(SG: nx.MultiDiGraph,
         edges = SG.get_edge_data(u, v)
         best  = min(edges.values(), key=lambda e: e.get('length', float('inf')))
         base  = best.get('length', 50.0)
-        w     = base + (BLOCKED_PENALTY if (u, v) in penalised else 0)
+        w     = base
+        if (u, v) in penalised:
+            w += BLOCKED_PENALTY
+        elif (u, v) in flood_w:
+            w += flood_w[(u, v)]
         DG.add_edge(u, v, weight=w, base_length=base,
-                    penalized=((u, v) in penalised))
+                    penalized=((u, v) in penalised),
+                    flood_weighted=((u, v) in flood_w))
 
-    return DG, len(penalised)
+    return DG, len(penalised), len(flood_w)
 
 # ── Alternative routing ────────────────────────────────────────────────────────
 
@@ -346,6 +373,7 @@ def route():
     start   = body.get('start')
     end     = body.get('end')
     blocked = (body.get('blockedPoints') or [])[:MAX_BLOCKED_PTS]
+    flood_pts = (body.get('floodPoints') or [])[:MAX_FLOOD_PTS]
     
     try:
         count = min(int(body.get('routeCount', 2)), MAX_ROUTE_COUNT)
@@ -389,10 +417,11 @@ def route():
     if mem_err:
         return jsonify({'error': mem_err, 'memoryLimitGB': MEMORY_LIMIT_GB}), 503
 
-    # 3. Build penalised DiGraph from subgraph
+    # 3. Build penalised DiGraph from subgraph (blocked = hard, flood_pts = soft)
     t0 = time.time()
-    DG, penalized_count = _build_digraph(SG, blocked)
+    DG, penalized_count, flood_weighted_count = _build_digraph(SG, blocked, flood_pts or None)
     timing['buildGraphS'] = round(time.time() - t0, 3)
+    timing['floodWeightedEdges'] = flood_weighted_count
 
     # 4. Find alternative routes
     routes_raw, astar_times = _find_routes(DG, sn, en, count)
@@ -414,7 +443,7 @@ def route():
           f'subgraph={timing["subgraphNodes"]}n/{timing["subgraphEdges"]}e | '
           f'snap={timing["snapS"]}s build={timing["buildGraphS"]}s '
           f'astar={astar_times} total={timing["totalS"]}s | '
-          f'penalizedEdges={penalized_count} | '
+          f'penalizedEdges={penalized_count} floodWeighted={flood_weighted_count} | '
           f'RAM={mem_after:.2f}GB', flush=True)
 
     return jsonify({

@@ -250,16 +250,28 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
           });
           window.debugMap = mapInstance.current;
           // Wire map click → dynamic routing point capture (use refs so handler is never stale)
-          mapInstance.current.Event.bind('click', (e) => {
+          const handleUniversalClick = (lat, lon) => {
             if (!clickModeRef.current) return;
-            // GISTDA SDK click event: try multiple property shapes
+            if (lat != null && lon != null && onMapClickRef.current) {
+              console.log('[MAP CLICK UNIVERSAL]', clickModeRef.current, lat, lon);
+              onMapClickRef.current({ lat: +Number(lat).toFixed(6), lon: +Number(lon).toFixed(6) });
+            }
+          };
+
+          mapInstance.current.Event.bind('click', (e) => {
             const lat = e?.location?.lat ?? e?.lat ?? (Array.isArray(e?.coordinate) ? e.coordinate[1] : null);
             const lon = e?.location?.lon ?? e?.lon ?? (Array.isArray(e?.coordinate) ? e.coordinate[0] : null);
-            console.log('[MAP CLICK]', clickModeRef.current, lat, lon);
-            if (lat != null && lon != null && onMapClickRef.current) {
-              onMapClickRef.current({ lat: +lat.toFixed(6), lon: +lon.toFixed(6) });
-            }
+            handleUniversalClick(lat, lon);
           });
+
+          // Bulletproof Fallback: Bind directly to underlying MapLibre GL instance
+          // This ensures that clicks on native WebGL layers (like flood frequency fill layers) are NOT swallowed!
+          const mlMap = getML(mapInstance.current);
+          if (mlMap) {
+            mlMap.on('click', (e) => {
+              handleUniversalClick(e.lngLat?.lat, e.lngLat?.lng);
+            });
+          }
         } catch (err) {
           console.error("❌ Map initialization failed:", err);
           setMapError(true);
@@ -314,7 +326,14 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
     layersRef.current.stations.forEach(s => mapInstance.current.Overlays.remove(s));
     layersRef.current.stations = [];
     if (!toggles.wind) return;
-    WEATHER_STATIONS.forEach(st => {
+
+    const centerLat = PROVINCES[selectedProvince]?.lat || 19.908;
+    const centerLon = PROVINCES[selectedProvince]?.lon || 99.832;
+    const activeStations = selectedProvince === 'เชียงราย' 
+      ? WEATHER_STATIONS 
+      : [{ id: 'PROVINCE_CENTER', name: `อ.เมือง (${selectedProvince})`, lat: centerLat, lon: centerLon }];
+
+    activeStations.forEach(st => {
       const d = stationData[st.id]; if (!d) return;
       const rainValNum = parseFloat(d.rain);
       const isRainValValid = !isNaN(rainValNum) && rainValNum > 0;
@@ -629,6 +648,16 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
     
     const onOverlayClick = (overlay) => {
       console.log("[SphereMap] overlayClick:", overlay);
+
+      // If user is setting a route point (clickMode active), treat clicking on an overlay (like a rain circle) as a map click!
+      if (clickModeRef.current) {
+        const lat = overlay?.location?.lat ?? overlay?.lat ?? overlay?.options?.lat;
+        const lon = overlay?.location?.lon ?? overlay?.lon ?? overlay?.options?.lon;
+        if (lat != null && lon != null && onMapClickRef.current) {
+          onMapClickRef.current({ lat: +Number(lat).toFixed(6), lon: +Number(lon).toFixed(6) });
+          return; // Stop processing as a CCTV camera click
+        }
+      }
       
       // Attempt to extract URL and title from various possible Longdo structures
       let url = overlay?.data?.url || overlay?.url || overlay?.options?.url;
@@ -1025,12 +1054,12 @@ export default function App() {
     } else {
       // Both TMD and Open-Meteo unavailable — last-resort static climatological normals
       const fallbacks = {
-        'CR_CITY':       { tc: 27.5, rr: 3.2, ws: 2.8, wd: 200 },
-        'MAE_SAI':       { tc: 25.8, rr: 14.2, ws: 5.1, wd: 175 },
-        'WIANG_PA_PAO':  { tc: 24.1, rr: 18.6, ws: 6.3, wd: 185 },
-        'THOENG':        { tc: 26.3, rr: 7.4, ws: 3.5, wd: 195 },
-        'PHAN':          { tc: 27.0, rr: 2.1, ws: 2.0, wd: 90 },
-        'CHIANG_KHONG':  { tc: 28.5, rr: 4.5, ws: 3.0, wd: 210 },
+        'CR_CITY':       { tc: 27.5, rain: 3.2, ws10m: 2.8, wd10m: 200 },
+        'MAE_SAI':       { tc: 25.8, rain: 14.2, ws10m: 5.1, wd10m: 175 },
+        'WIANG_PA_PAO':  { tc: 24.1, rain: 18.6, ws10m: 6.3, wd10m: 185 },
+        'THOENG':        { tc: 26.3, rain: 7.4, ws10m: 3.5, wd10m: 195 },
+        'PHAN':          { tc: 27.0, rain: 2.1, ws10m: 2.0, wd10m: 90 },
+        'CHIANG_KHONG':  { tc: 28.5, rain: 4.5, ws10m: 3.0, wd10m: 210 },
       };
       setStationData(fallbacks);
       addToast('⚠️ เชื่อมต่อ TMD ล้มเหลว — ดึงข้อมูลคาดการณ์เชิงสถิติของจังหวัดแทน', 'warn');

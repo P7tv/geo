@@ -23,15 +23,15 @@ const ModelMetrics = () => {
       <div className="gov-card-body metrics-panel">
         <div className="metrics-row">
           <div className="metric-card">
-            <div className="metric-val">{(metrics.accuracy * 100).toFixed(1)}%</div>
+            <div className="metric-val">{(metrics.accuracy ? (metrics.accuracy * 100).toFixed(1) : '0.0')}%</div>
             <div className="metric-lbl">Accuracy</div>
           </div>
           <div className="metric-card">
-            <div className="metric-val">{metrics.f1_score.toFixed(2)}</div>
+            <div className="metric-val">{metrics.f1_score?.toFixed(2) ?? '0.00'}</div>
             <div className="metric-lbl">F1 Score</div>
           </div>
           <div className="metric-card">
-            <div className="metric-val">{metrics.auc.toFixed(2)}</div>
+            <div className="metric-val">{metrics.auc?.toFixed(2) ?? '0.00'}</div>
             <div className="metric-lbl">AUC-ROC</div>
           </div>
         </div>

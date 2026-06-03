@@ -9,7 +9,6 @@ pip install -r requirements.txt
 if [ ! -f "models/xgb_flood_risk.json" ]; then
     echo "🧠 Training Ensemble Models (XGBoost, RF, LR, IsolationForest)..."
     python -c "import nbformat; from nbconvert.preprocessors import ExecutePreprocessor; nb = nbformat.read('train.ipynb', as_version=4); ep = ExecutePreprocessor(timeout=600, kernel_name='python3'); ep.preprocess(nb, {'metadata': {'path': './'}})"
-    echo "✅ Models trained successfully."
 fi
 
 echo "⚡ Starting Uvicorn FastAPI Server on port 8087 with uvloop..."

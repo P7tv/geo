@@ -1811,12 +1811,23 @@ app.post('/api/dynamic-routes', async (req, res) => {
     // ── Tier 1: Local NetworkX graph ──────────────────────────────────────────
     let localGraphError = null;
     if (localOk) {
-      const reqBody = { start, end, blockedPoints, routeCount };
-      console.log(`[local-graph] POST ${LOCAL_GRAPH_URL}/route  body=${JSON.stringify(reqBody)}`);
+      // Convert live GISTDA flood polygons → centroid flood points for A* edge weighting
+      const floodPoints = (gistdaFloodCache.data ?? []).slice(0, 50).map(f => {
+        const coords = f.geometry?.type === 'Polygon'
+          ? f.geometry.coordinates[0]
+          : f.geometry?.coordinates?.[0]?.[0] ?? [];
+        if (!coords.length) return null;
+        const lon = coords.reduce((s, c) => s + c[0], 0) / coords.length;
+        const lat = coords.reduce((s, c) => s + c[1], 0) / coords.length;
+        return { lat, lon, radiusM: 400, severity: 1.0 };
+      }).filter(Boolean);
+
+      const reqBody = { start, end, blockedPoints, routeCount, floodPoints, province };
+      console.log(`[local-graph] POST ${LOCAL_GRAPH_URL}/route  province=${province}  body=${JSON.stringify({ start, end, blockedPoints, routeCount })}`);
       try {
         const pyRes = await fetchWithTimeout(`${LOCAL_GRAPH_URL}/route`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: mlHeaders(),
           body: JSON.stringify(reqBody),
         }, 20000);
 

@@ -16,6 +16,7 @@ import os
 import joblib
 import pandas as pd
 from scipy.optimize import linprog
+import routing
 
 FEATURE_COLS = ["f_flood_exposure", "f_forecast_rain", "f_historical_freq", "f_soil_moisture"]
 
@@ -70,6 +71,11 @@ async def lifespan(app: FastAPI):
         X_dummy = np.random.rand(10, 4)
         explainer = shap.TreeExplainer(xgb_model, X_dummy, feature_perturbation="interventional")
         print("✅ Models Loaded successfully.")
+        
+        # Preload ALL graphs sequentially in the background
+        import threading
+        print("Triggering background load for ALL provinces...")
+        threading.Thread(target=routing.preload_all_graphs, daemon=True).start()
     except Exception as e:
         print(f"Failed to load some models: {e}")
         
@@ -81,6 +87,8 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan
 )
+
+app.include_router(routing.router)
 
 @app.middleware("http")
 async def api_key_guard(request: Request, call_next):
