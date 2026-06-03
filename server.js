@@ -2171,6 +2171,65 @@ app.get('/api/vehicles/logs', (_req, res) => {
 
 
 
+// ── Field Officer Endpoints ──────────────────────────────────────────────────
+
+const fieldReports = []; // in-memory fallback when Supabase is unavailable
+
+app.post('/api/field-report', async (req, res) => {
+  const { type, severity, note, lat, lon, province, timestamp } = req.body || {};
+  if (!type) return res.status(400).json({ error: 'type is required' });
+
+  const report = {
+    id: Date.now(),
+    type,
+    severity: severity || 'medium',
+    note: note || '',
+    lat: lat ? parseFloat(lat) : null,
+    lon: lon ? parseFloat(lon) : null,
+    province: province || 'เชียงราย',
+    timestamp: timestamp || new Date().toISOString(),
+  };
+
+  if (supabase) {
+    try {
+      await supabase.from('field_reports').insert([report]);
+    } catch (e) {
+      console.warn('Supabase field_reports insert failed, saving in-memory:', e.message);
+      fieldReports.push(report);
+    }
+  } else {
+    fieldReports.push(report);
+  }
+
+  console.log(`📋 Field report received: ${type} (${severity}) at ${lat},${lon}`);
+  res.json({ status: 'ok', id: report.id });
+});
+
+const MOCK_TEAM_LOCATIONS = [
+  { id: 1, name: 'สมชาย ใจดี',   role: 'หัวหน้าทีม', lat: 19.9120, lon: 99.8350, status: 'active',  updatedAt: '2 นาทีที่แล้ว' },
+  { id: 2, name: 'วิทยา บุญมา',  role: 'อปพร.',     lat: 19.9050, lon: 99.8400, status: 'active',  updatedAt: '5 นาทีที่แล้ว' },
+  { id: 3, name: 'สมหญิง รักดี', role: 'อปพร.',     lat: 19.9200, lon: 99.8280, status: 'offline', updatedAt: '32 นาทีที่แล้ว' },
+  { id: 4, name: 'อนุชา ทองคำ',  role: 'อปพร.',     lat: 19.8980, lon: 99.8420, status: 'active',  updatedAt: '1 นาทีที่แล้ว' },
+];
+
+app.get('/api/team-locations', async (_req, res) => {
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('team_locations')
+        .select('*')
+        .order('updated_at', { ascending: false })
+        .limit(20);
+      if (!error && data && data.length > 0) {
+        return res.json({ members: data });
+      }
+    } catch (e) {
+      console.warn('Supabase team_locations query failed, using mock:', e.message);
+    }
+  }
+  res.json({ members: MOCK_TEAM_LOCATIONS });
+});
+
 // ── Data Pipeline (Feature 4) ────────────────────────────────────────────────
 const logSnapshot = async () => {
   if (!supabase) return;

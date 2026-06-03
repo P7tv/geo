@@ -87,18 +87,31 @@ def execute_remote_code(code):
 
 if __name__ == "__main__":
     code = """
-import json
+import urllib.request
+import zipfile
+import shutil
 import os
-path = "workspace/geo/train.ipynb"
-if os.path.exists(path):
-    print("Notebook train.ipynb found! Summarizing cells:")
-    with open(path, "r", encoding="utf-8") as f:
-        nb = json.load(f)
-    for idx, cell in enumerate(nb.get("cells", [])):
-        cell_type = cell.get("cell_type")
-        source = "".join(cell.get("source", []))
-        print(f"Cell [{idx}] ({cell_type}): {source[:150]}...")
-else:
-    print("train.ipynb not found!")
+
+url = "https://github.com/ultralytics/yolov5/releases/download/v1.0/coco128.zip"
+zip_path = "workspace/geo/coco128.zip"
+
+print("Downloading COCO128 dataset to VM...")
+try:
+    urllib.request.urlretrieve(url, zip_path)
+    print("Download completed! Extracting...")
+    
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall("workspace/geo")
+        
+    dst_dataset = "workspace/geo/dataset"
+    src_dataset = "workspace/geo/coco128"
+    
+    if os.path.exists(dst_dataset):
+        shutil.rmtree(dst_dataset)
+    os.rename(src_dataset, dst_dataset)
+    os.remove(zip_path)
+    print("✅ COCO128 dataset successfully ready at workspace/geo/dataset!")
+except Exception as e:
+    print("❌ Failed to download/extract dataset:", e)
 """
     execute_remote_code(code)

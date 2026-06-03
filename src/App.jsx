@@ -18,6 +18,7 @@ import RiskTimeline from './components/RiskTimeline';
 import AnimatedGauge from './components/AnimatedGauge';
 import RiverSparkline from './components/RiverSparkline';
 import MissionMode from './components/MissionMode';
+import FieldOfficerMode from './components/FieldOfficerMode';
 import ModelBenchmarkDashboard from './components/ModelBenchmarkDashboard';
 import FloodAnimationControl from './components/FloodAnimationControl';
 
@@ -449,7 +450,7 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
     const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY;
     const layer = new window.sphere.Layer(`freq-wms-${histFreqRange}`, {
       type: window.sphere.LayerType.WMS,
-      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
+      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}`,
       extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
       zoomRange: { min: 1, max: 20 },
       zIndex: 3,
@@ -471,7 +472,7 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
     const dataKey = import.meta.env.VITE_GISTDA_DATA_KEY;
     const layer = new window.sphere.Layer(`flood-wms-${floodRange}`, {
       type: window.sphere.LayerType.WMS,
-      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}?`,
+      url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}`,
       extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
       zoomRange: { min: 1, max: 20 },
       zIndex: 4,
@@ -754,6 +755,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('cockpit'); // Routing tab state
   const [mobileActivePanel, setMobileActivePanel] = useState('map'); // 'map', 'left', 'right', 'chat'
   const [isMissionMode, setIsMissionMode] = useState(false);
+  const [isFieldMode, setIsFieldMode] = useState(false);
   const [showBenchmark, setShowBenchmark] = useState(false);
   const [mapRedrawTick, setMapRedrawTick] = useState(0);
   const leftPanelScrollRef = useRef(null);
@@ -1529,7 +1531,7 @@ export default function App() {
     <div id="app-container" style={{ position: 'relative' }}>
 
       {isMissionMode && (
-        <MissionMode 
+        <MissionMode
           onClose={() => setIsMissionMode(false)}
           routes={routeMode === 'dynamic' ? simulatedDynRoutes : allRoutesDataWithSandbox}
           activeRouteId={routeMode === 'dynamic' ? dynActiveRoute : activeRoute}
@@ -1540,6 +1542,17 @@ export default function App() {
           decisionLogs={decisionLogs}
           vehicleData={vehicleData}
           selectedCamera={selectedCamera}
+        />
+      )}
+
+      {isFieldMode && (
+        <FieldOfficerMode
+          onClose={() => setIsFieldMode(false)}
+          routes={routeMode === 'dynamic' ? simulatedDynRoutes : allRoutesDataWithSandbox}
+          selectedProvince={selectedProvince}
+          waterLevels={waterLevels}
+          shelters={shelters}
+          decisionLogs={decisionLogs}
         />
       )}
 
@@ -1629,9 +1642,15 @@ export default function App() {
             <button className={`header-nav-btn ${activeTab === 'geospatial' ? 'active' : ''}`} onClick={() => setActiveTab('geospatial')}>GIS</button>
             <button className={`header-nav-btn ${activeTab === 'resources' ? 'active' : ''}`} onClick={() => setActiveTab('resources')}>ทรัพยากร</button>
             <button className={`header-nav-btn ${activeTab === 'executive' ? 'active' : ''}`} onClick={() => setActiveTab('executive')}>รายงาน</button>
-            <button 
-              className="header-nav-btn" 
-              style={{ background: 'var(--blue-dim)', color: 'var(--blue-primary)', borderColor: 'var(--blue-primary)', fontWeight: 'bold' }} 
+            <button
+              className="fo-entry-btn"
+              onClick={() => setIsFieldMode(true)}
+            >
+              🦺 โหมดเจ้าหน้าที่
+            </button>
+            <button
+              className="header-nav-btn"
+              style={{ background: 'var(--blue-dim)', color: 'var(--blue-primary)', borderColor: 'var(--blue-primary)', fontWeight: 'bold' }}
               onClick={() => setShowBenchmark(true)}
             >
               🧠 AI Benchmark

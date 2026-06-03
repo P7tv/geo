@@ -52,8 +52,8 @@ async def lifespan(app: FastAPI):
     try:
         if YOLO is not None:
             try:
-                print("Loading YOLOv8 model for inference...")
-                yolo_model = YOLO("yolov8n.pt")
+                print("Loading YOLOv26 model for inference...")
+                yolo_model = YOLO("yolo26n.pt")
                 try:
                     yolo_model.to('cuda:0')
                 except Exception as cuda_err:
