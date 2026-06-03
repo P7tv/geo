@@ -1884,61 +1884,69 @@ app.get('/api/stream-cctv', (req, res) => {
     const frameInterval = 80; // Target ~12 FPS
     let isProcessing = false;
     
-    activeRequest = parseMJPEG(url, async (jpegFrame) => {
+    const startStreaming = () => {
       if (isClosed) return;
       
-      const now = Date.now();
-      if (now - lastProcessedTime < frameInterval || isProcessing) {
-        // Skip frames to keep up with stream speed
-        return;
-      }
-      
-      isProcessing = true;
-      lastProcessedTime = now;
-      
-      try {
-        const targetUrl = `${ML_INFERENCE_URL}/process_frame`;
-        const response = await fetch(targetUrl, {
-          method: 'POST',
-          headers: {
-            ...mlHeaders(),
-            'Content-Type': 'image/jpeg'
-          },
-          body: jpegFrame,
-          signal: AbortSignal.timeout(1500)
-        });
+      activeRequest = parseMJPEG(url, async (jpegFrame) => {
+        if (isClosed) return;
         
-        if (response.ok) {
-          const annotatedBytes = Buffer.from(await response.arrayBuffer());
-          if (!isClosed) {
-            res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${annotatedBytes.length}\r\n\r\n`);
-            res.write(annotatedBytes);
-            res.write('\r\n');
+        const now = Date.now();
+        if (now - lastProcessedTime < frameInterval || isProcessing) {
+          // Skip frames to keep up with stream speed
+          return;
+        }
+        
+        isProcessing = true;
+        lastProcessedTime = now;
+        
+        try {
+          const targetUrl = `${ML_INFERENCE_URL}/process_frame`;
+          const response = await fetch(targetUrl, {
+            method: 'POST',
+            headers: {
+              ...mlHeaders(),
+              'Content-Type': 'image/jpeg'
+            },
+            body: jpegFrame,
+            signal: AbortSignal.timeout(1500)
+          });
+          
+          if (response.ok) {
+            const annotatedBytes = Buffer.from(await response.arrayBuffer());
+            if (!isClosed) {
+              res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${annotatedBytes.length}\r\n\r\n`);
+              res.write(annotatedBytes);
+              res.write('\r\n');
+            }
+          } else {
+            // Fallback to original frame on error
+            if (!isClosed) {
+              res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegFrame.length}\r\n\r\n`);
+              res.write(jpegFrame);
+              res.write('\r\n');
+            }
           }
-        } else {
-          // Fallback to original frame on error
+        } catch (err) {
+          console.error('[API] Error processing frame with B200:', err.message);
           if (!isClosed) {
             res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegFrame.length}\r\n\r\n`);
             res.write(jpegFrame);
             res.write('\r\n');
           }
+        } finally {
+          isProcessing = false;
         }
-      } catch (err) {
-        console.error('[API] Error processing frame with B200:', err.message);
+      }, (err) => {
+        console.error('[API] MJPEG Stream Error, attempting reconnect in 1s:', err.message);
         if (!isClosed) {
-          res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpegFrame.length}\r\n\r\n`);
-          res.write(jpegFrame);
-          res.write('\r\n');
+          setTimeout(startStreaming, 1000);
+        } else if (!res.writableEnded) {
+          res.end();
         }
-      } finally {
-        isProcessing = false;
-      }
-    }, (err) => {
-      console.error('[API] MJPEG Stream Error:', err.message);
-      if (!res.writableEnded) {
-        res.end();
-      }
-    });
+      });
+    };
+
+    startStreaming();
   } catch (err) {
     console.error('[API] stream-cctv top level error:', err.message);
     if (!res.writableEnded) {

@@ -87,17 +87,18 @@ def execute_remote_code(code):
 
 if __name__ == "__main__":
     code = """
-import subprocess
-print("Running uvicorn in foreground to catch error...")
-cmd = "cd workspace/geo && PYTHONUNBUFFERED=1 B200_API_KEY=floodnav-56f38b6dc2e659d0 uvicorn main:app --host 0.0.0.0 --port 8087 --loop uvloop"
-try:
-    res = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=7)
-    print("Uvicorn exited with code:", res.returncode)
-    print(res.stdout.decode())
-except subprocess.TimeoutExpired as e:
-    print("Uvicorn is still running (timeout reached as expected):")
-    print(e.output.decode())
-except Exception as err:
-    print("Error running command:", err)
+import json
+import os
+path = "workspace/geo/train.ipynb"
+if os.path.exists(path):
+    print("Notebook train.ipynb found! Summarizing cells:")
+    with open(path, "r", encoding="utf-8") as f:
+        nb = json.load(f)
+    for idx, cell in enumerate(nb.get("cells", [])):
+        cell_type = cell.get("cell_type")
+        source = "".join(cell.get("source", []))
+        print(f"Cell [{idx}] ({cell_type}): {source[:150]}...")
+else:
+    print("train.ipynb not found!")
 """
     execute_remote_code(code)
