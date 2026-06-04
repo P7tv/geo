@@ -1,104 +1,108 @@
 import React, { useState, useEffect } from 'react';
 
-const FLOOD_STAGES = ['1day', '3days', '7days', '30days'];
-const STAGE_LABELS = {
-  '1day': 'Day 1',
-  '3days': 'Day 3',
-  '7days': 'Day 7',
-  '30days': 'Day 30'
-};
+const HIST = [
+  { id: '1day',   label: '1d' },
+  { id: '3days',  label: '3d' },
+  { id: '7days',  label: '7d' },
+  { id: '30days', label: '30d' },
+];
+const PRED = [
+  { id: 0, label: 'Now' },
+  { id: 1, label: '+6h' },
+  { id: 2, label: '+12h' },
+  { id: 3, label: '+24h' },
+  { id: 4, label: '+72h' },
+];
 
-export default function FloodAnimationControl({ floodRange, setFloodRange, isFloodLayerActive }) {
-  const [isPlaying, setIsPlaying] = useState(false);
+export default function FloodAnimationControl({
+  floodRange, setFloodRange, isFloodLayerActive,
+  simulationRainMultiplier = 1.0,
+  predictiveMode, setPredictiveMode,
+  predictiveStep, setPredictiveStep,
+}) {
+  const [playing, setPlaying] = useState(false);
 
   useEffect(() => {
-    let timer;
-    if (isPlaying) {
-      timer = setInterval(() => {
-        setFloodRange(current => {
-          const currentIndex = FLOOD_STAGES.indexOf(current);
-          if (currentIndex === -1 || currentIndex === FLOOD_STAGES.length - 1) {
-            return FLOOD_STAGES[0]; // loop back
-          }
-          return FLOOD_STAGES[currentIndex + 1];
-        });
-      }, 1500); // 1.5 seconds per frame
-    }
-    return () => clearInterval(timer);
-  }, [isPlaying, setFloodRange]);
+    if (!playing || predictiveMode) return;
+    const t = setInterval(() => setFloodRange(c => {
+      const i = HIST.findIndex(h => h.id === c);
+      return HIST[(i + 1) % HIST.length].id;
+    }), 1500);
+    return () => clearInterval(t);
+  }, [playing, predictiveMode, setFloodRange]);
+
+  useEffect(() => {
+    if (!playing || !predictiveMode) return;
+    const t = setInterval(() => setPredictiveStep(s => {
+      if (s >= PRED.length - 1) { setPlaying(false); return s; }
+      return s + 1;
+    }), 1200);
+    return () => clearInterval(t);
+  }, [playing, predictiveMode, setPredictiveStep]);
 
   if (!isFloodLayerActive) return null;
 
-  return (
-    <div className="flood-animation-control" style={{
-      position: 'absolute',
-      bottom: 24,
-      left: '50%',
-      transform: 'translateX(-50%)',
-      background: 'rgba(15, 23, 42, 0.85)',
-      backdropFilter: 'blur(8px)',
-      border: '1px solid var(--border)',
-      borderRadius: 'var(--radius-lg)',
-      padding: '12px 20px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 20,
-      zIndex: 1000,
-      boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-      color: 'var(--text-1)',
-      fontFamily: 'var(--font-en)'
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button 
-          onClick={() => setIsPlaying(!isPlaying)}
-          style={{
-            background: isPlaying ? 'rgba(239, 68, 68, 0.2)' : 'var(--blue-primary)',
-            color: isPlaying ? '#ef4444' : '#fff',
-            border: isPlaying ? '1px solid rgba(239, 68, 68, 0.4)' : 'none',
-            width: 36, height: 36, borderRadius: '50%',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            cursor: 'pointer', fontSize: 16,
-            transition: 'all 0.2s',
-            boxShadow: isPlaying ? 'none' : '0 4px 12px rgba(59, 130, 246, 0.4)'
-          }}
-        >
-          {isPlaying ? '⏸' : '▶'}
-        </button>
-        <div>
-          <div style={{ fontSize: 11, color: 'var(--blue-primary)', fontWeight: 'bold', letterSpacing: 1, textTransform: 'uppercase' }}>
-            Flood Propagation
-          </div>
-          <div style={{ fontSize: 10, color: 'var(--text-3)' }}>Time-lapse Simulation</div>
-        </div>
-      </div>
+  const accent = predictiveMode ? '#f59e0b' : '#3b82f6';
+  const steps  = predictiveMode ? PRED : HIST;
+  const active = predictiveMode ? predictiveStep : floodRange;
 
-      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-        {FLOOD_STAGES.map((stage, idx) => (
-          <React.Fragment key={stage}>
-            <button
-              onClick={() => { setIsPlaying(false); setFloodRange(stage); }}
-              style={{
-                background: floodRange === stage ? 'var(--blue-primary)' : 'rgba(51, 65, 85, 0.5)',
-                color: floodRange === stage ? '#fff' : 'var(--text-2)',
-                border: '1px solid',
-                borderColor: floodRange === stage ? 'var(--blue-glow)' : 'var(--border)',
-                padding: '4px 10px',
-                borderRadius: 16,
-                fontSize: 11,
-                fontWeight: floodRange === stage ? 'bold' : 'normal',
-                cursor: 'pointer',
-                transition: 'all 0.2s',
-                boxShadow: floodRange === stage ? '0 2px 8px rgba(59, 130, 246, 0.4)' : 'none'
-              }}
-            >
-              {STAGE_LABELS[stage]}
-            </button>
-            {idx < FLOOD_STAGES.length - 1 && (
-              <div style={{ width: 12, height: 1, background: 'var(--border-strong)' }} />
-            )}
-          </React.Fragment>
-        ))}
-      </div>
+  const btn = (id, label, onClick) => {
+    const sel = active === id;
+    return (
+      <button key={id} onClick={onClick} style={{
+        padding: '1px 6px', borderRadius: 99, border: 'none',
+        fontSize: 8, fontWeight: sel ? 700 : 400, cursor: 'pointer',
+        background: sel ? accent : 'transparent',
+        color: sel ? (predictiveMode ? '#0f172a' : '#fff') : 'rgba(255,255,255,0.4)',
+        transition: 'all 0.15s',
+      }}>{label}</button>
+    );
+  };
+
+  return (
+    <div style={{
+      position: 'absolute', bottom: 12, left: '50%',
+      transform: 'translateX(-50%)',
+      background: 'rgba(15,23,42,0.85)', backdropFilter: 'blur(10px)',
+      border: `1px solid ${accent}33`, borderRadius: 99,
+      padding: '3px 8px', display: 'inline-flex', alignItems: 'center',
+      gap: 4, zIndex: 1000, boxShadow: '0 2px 12px rgba(0,0,0,0.4)',
+      whiteSpace: 'nowrap', userSelect: 'none',
+    }}>
+      {/* play */}
+      <button onClick={() => setPlaying(p => !p)} style={{
+        width: 20, height: 20, borderRadius: '50%', border: 'none',
+        background: playing ? 'rgba(239,68,68,0.2)' : accent,
+        color: playing ? '#ef4444' : '#fff',
+        fontSize: 9, cursor: 'pointer', display: 'flex',
+        alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+      }}>{playing ? '⏸' : '▶'}</button>
+
+      {/* mode label */}
+      <span style={{ fontSize: 8, fontWeight: 700, color: accent }}>
+        {predictiveMode ? '🔮' : '🕐'}
+      </span>
+
+      <div style={{ width: 1, height: 12, background: 'rgba(255,255,255,0.1)' }} />
+
+      {/* time steps */}
+      {steps.map(s => btn(s.id, s.label, () => {
+        setPlaying(false);
+        predictiveMode ? setPredictiveStep(s.id) : setFloodRange(s.id);
+      }))}
+
+      <div style={{ width: 1, height: 12, background: 'rgba(255,255,255,0.1)' }} />
+
+      {/* mode toggle */}
+      {[{ id: false, label: 'ประวัติ' }, { id: true, label: 'ทำนาย' }].map(m => (
+        <button key={String(m.id)} onClick={() => { setPredictiveMode(m.id); setPlaying(false); }} style={{
+          padding: '1px 6px', borderRadius: 99, border: 'none', fontSize: 8,
+          fontWeight: predictiveMode === m.id ? 700 : 400, cursor: 'pointer',
+          background: predictiveMode === m.id ? (m.id ? '#f59e0b' : '#3b82f6') : 'transparent',
+          color: predictiveMode === m.id ? '#0f172a' : 'rgba(255,255,255,0.35)',
+          transition: 'all 0.15s',
+        }}>{m.label}</button>
+      ))}
     </div>
   );
 }

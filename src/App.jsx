@@ -56,6 +56,33 @@ const CR_RISK_POINTS = [
   { name: 'อ.เทิง',         lat: 19.977, lon: 100.074, severity: 0.65 },
 ];
 
+// ── Predictive Flood Zone Helpers ────────────────────────────────────────────
+const PRED_TIME_HOURS = [0, 6, 12, 24, 72];
+
+function _floodCircle(lat, lon, radiusM, props, steps = 48) {
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  const coords = Array.from({ length: steps + 1 }, (_, i) => {
+    const a = (i / steps) * 2 * Math.PI;
+    return [lon + (radiusM * Math.cos(a)) / (111320 * cosLat),
+            lat + (radiusM * Math.sin(a)) / 111320];
+  });
+  return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [coords] }, properties: props };
+}
+
+function computePredictiveZones(riskPoints, rainMultiplier, stepIndex) {
+  const hours = PRED_TIME_HOURS[stepIndex] ?? 0;
+  const excess = Math.max(0, rainMultiplier - 1.0);
+  return {
+    type: 'FeatureCollection',
+    features: riskPoints.map(pt => {
+      const radius = Math.max(400, pt.severity * 2800 + excess * hours * 180 * pt.severity);
+      const risk = Math.round(Math.min(100, pt.severity * 100 * rainMultiplier));
+      return _floodCircle(pt.lat, pt.lon, radius,
+        { name: pt.name, risk, hour: hours, label: hours === 0 ? 'ตอนนี้' : `+${hours}h` });
+    }),
+  };
+}
+
 const ROUTES_BASE = [
   { id: 'A', name: 'เส้นทาง A — ทล.1 เมือง→แม่สาย',    color: '#22c55e', status: 'ปลอดภัย',     desc: 'ถนนสายหลัก ทล.1 ผ่านอ.พาน ระดับน้ำกกปกติ'       },
   { id: 'B', name: 'เส้นทาง B — ทล.118 เมือง→เทิง',   color: '#f59e0b', status: 'เสี่ยงปานกลาง', desc: 'ทล.118 ผ่านอ.เทิง น้ำท่วมบางส่วน คาดการณ์เพิ่ม' },
@@ -176,7 +203,7 @@ const SHELTER_ICONS = {
   assembly_point:{ emoji: renderToString(<Users size={16} />), color: 'rgba(245,158,11,0.8)' },
 };
 
-const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, waterLevels, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback, isMissionMode, mapRedrawTick, setSelectedCamera }) => {
+const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData, stationData, incidents, toggles, vehicleData, gistdaRiskPoints, shelters, waterLevels, floodRange, histFreqRange, clickMode, onMapClick, dynStart, dynEnd, dynBlocked, dynRoutes, dynActiveRoute, routeMode, isPrecomputedFallback, isMissionMode, mapRedrawTick, setSelectedCamera, predictiveMode, predictiveFloodZones }) => {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const layersRef = useRef({ polylines: {}, markers: [], stations: [], incidents: [], trafficMarkers: [], riskCircles: [], shelterMarkers: [], floodFreqLayer: null, floodWmsLayer: null, radarLayer: null, waterMarkers: [], dynLines: [], dynMarkers: [] });
@@ -424,7 +451,7 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
     layersRef.current.incidents = [];
     if (!toggles.history) return;
     incidents.forEach(inc => {
-      const circle = new window.sphere.Circle({ lon: inc.lon, lat: inc.lat }, 1200, {
+      const circle = new window.sphere.Circle({ lon: inc.lon, lat: inc.lat }, 150, {
         lineColor: 'rgba(239,68,68,0.5)', fillColor: 'rgba(239,68,68,0.1)',
       });
       mapInstance.current.Overlays.add(circle); layersRef.current.incidents.push(circle);
@@ -451,9 +478,10 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
     const layer = new window.sphere.Layer(`freq-wms-${histFreqRange}`, {
       type: window.sphere.LayerType.WMS,
       url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}`,
-      extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
+      extraQuery: `LAYERS=${wms.layer}&STYLES=&FORMAT=image/png&TRANSPARENT=true&api_key=${dataKey}`,
       zoomRange: { min: 1, max: 20 },
       zIndex: 3,
+      opacity: 0.5,
     });
     mapInstance.current.Layers.add(layer);
     layersRef.current.floodFreqLayer = layer;
@@ -473,13 +501,49 @@ const SphereMap = ({ activeMapType, selectedProvince, activeRoute, allRoutesData
     const layer = new window.sphere.Layer(`flood-wms-${floodRange}`, {
       type: window.sphere.LayerType.WMS,
       url: `https://api-gateway.gistda.or.th/api/2.0/resources/maps/${wms.path}`,
-      extraQuery: `LAYERS=${wms.layer}&STYLES=&api_key=${dataKey}`,
+      extraQuery: `LAYERS=${wms.layer}&STYLES=&FORMAT=image/png&TRANSPARENT=true&api_key=${dataKey}`,
       zoomRange: { min: 1, max: 20 },
       zIndex: 4,
+      opacity: 0.5,
     });
     mapInstance.current.Layers.add(layer);
     layersRef.current.floodWmsLayer = layer;
   }, [toggles.flood, floodRange, isMissionMode, mapRedrawTick]);
+
+  // Predictive flood zones — drawn as MapLibre GeoJSON fill layers
+  useEffect(() => {
+    if (!predictiveMode || !predictiveFloodZones) return;
+    const ml = getML(mapInstance.current);
+    if (!ml) return;
+    const SRC = 'predictive-flood';
+    const apply = () => {
+      try {
+        if (ml.getSource(SRC)) {
+          ml.getSource(SRC).setData(predictiveFloodZones);
+        } else {
+          ml.addSource(SRC, { type: 'geojson', data: predictiveFloodZones });
+          ml.addLayer({ id: 'pf-fill', type: 'fill', source: SRC, paint: {
+            'fill-color': ['interpolate', ['linear'], ['get', 'risk'], 0, '#3b82f6', 40, '#f59e0b', 70, '#ef4444', 100, '#7c3aed'],
+            'fill-opacity': 0.28,
+          }});
+          ml.addLayer({ id: 'pf-line', type: 'line', source: SRC, paint: {
+            'line-color': ['interpolate', ['linear'], ['get', 'risk'], 0, '#3b82f6', 40, '#f59e0b', 70, '#ef4444', 100, '#7c3aed'],
+            'line-width': 1.5, 'line-opacity': 0.65, 'line-dasharray': [3, 2],
+          }});
+        }
+      } catch (e) { console.warn('Predictive layer error:', e); }
+    };
+    ml.isStyleLoaded() ? apply() : ml.once('styledata', apply);
+  }, [predictiveMode, predictiveFloodZones, isMissionMode, mapRedrawTick]);
+
+  // Remove predictive layers when mode turns off
+  useEffect(() => {
+    if (predictiveMode) return;
+    const ml = getML(mapInstance.current);
+    if (!ml) return;
+    ['pf-line', 'pf-fill'].forEach(id => { try { if (ml.getLayer(id)) ml.removeLayer(id); } catch (_) {} });
+    try { if (ml.getSource('predictive-flood')) ml.removeSource('predictive-flood'); } catch (_) {}
+  }, [predictiveMode]);
 
   // Emergency facilities from OSM — toggled via emergencyPOI, max 30 markers
   useEffect(() => {
@@ -798,9 +862,11 @@ export default function App() {
   const [dynAllAffected, setDynAllAffected] = useState(false);
   const [dynRequestedCount, setDynRequestedCount] = useState(3);
   const [clock, setClock] = useState(new Date().toLocaleTimeString('en-GB'));
-  const [toggles, setToggles] = useState({ flood: true, wind: true, history: true, vehicles: true, histFreq: false, emergencyPOI: false, radar: false, waterLevel: false });
+  const [toggles, setToggles] = useState({ flood: false, wind: true, history: true, vehicles: true, histFreq: false, emergencyPOI: false, radar: false, waterLevel: false });
   const [floodRange, setFloodRange] = useState('7days');
   const [floodRangeOpen, setFloodRangeOpen] = useState(false);
+  const [predictiveMode, setPredictiveMode] = useState(false);
+  const [predictiveStep, setPredictiveStep] = useState(0);
   const [histFreqRange, setHistFreqRange] = useState('freq');
   const [histFreqRangeOpen, setHistFreqRangeOpen] = useState(false);
 
@@ -816,7 +882,7 @@ export default function App() {
   useEffect(() => {
     const probe = async () => {
       try {
-        const r = await fetch('/health');
+        const r = await fetch('/api/health');
         if (!r.ok) { setB200Status('error'); return; }
         const d = await r.json();
         setB200Status(d.services?.b200 ?? 'offline');
@@ -1527,6 +1593,19 @@ export default function App() {
   const alertLevelClass = alertLevel >= 3 ? 'alert-3' : alertLevel === 2 ? 'alert-2' : 'alert-1';
   const hasTmdWarning = Boolean(tmdAlertText);
 
+  if (isFieldMode) {
+    return (
+      <FieldOfficerMode
+        onClose={() => setIsFieldMode(false)}
+        routes={routeMode === 'dynamic' ? simulatedDynRoutes : allRoutesDataWithSandbox}
+        selectedProvince={selectedProvince}
+        waterLevels={waterLevels}
+        shelters={shelters}
+        decisionLogs={decisionLogs}
+      />
+    );
+  }
+
   return (
     <div id="app-container" style={{ position: 'relative' }}>
 
@@ -1545,17 +1624,6 @@ export default function App() {
         />
       )}
 
-      {isFieldMode && (
-        <FieldOfficerMode
-          onClose={() => setIsFieldMode(false)}
-          routes={routeMode === 'dynamic' ? simulatedDynRoutes : allRoutesDataWithSandbox}
-          selectedProvince={selectedProvince}
-          waterLevels={waterLevels}
-          shelters={shelters}
-          decisionLogs={decisionLogs}
-        />
-      )}
-
 
       {/* Toasts */}
       <div className="toast-container">
@@ -1568,7 +1636,7 @@ export default function App() {
       </div>
 
       {/* ── Compact Header ── */}
-      <header className="app-header no-print" style={{ display: isMissionMode ? 'none' : 'flex' }}>
+      <header className="app-header no-print" style={{ display: (isMissionMode || isFieldMode) ? 'none' : 'flex' }}>
         <div className="header-brand">
           <span className="header-brand-icon">🛡️</span>
           <div className="header-brand-text">
@@ -1659,7 +1727,7 @@ export default function App() {
         </div>
       </header>
 
-      {earlyWarning && !isMissionMode && (
+      {earlyWarning && !isMissionMode && !isFieldMode && (
         <div className={`alert-bar level-${earlyWarning.alert_level === 'danger' ? 3 : 2} no-print`} style={{ background: earlyWarning.alert_level === 'danger' ? '#ef4444' : '#f59e0b', color: '#fff', border: 'none' }}>
           <span style={{marginRight: 6, display: 'flex', alignItems: 'center'}}>{earlyWarning.alert_level === 'danger' ? <Siren size={14}/> : <AlertTriangle size={14}/>}</span>
           <span className="alert-bar-txt" style={{ fontWeight: 'bold' }}>
@@ -1670,7 +1738,7 @@ export default function App() {
       )}
 
       {/* ── Alert bar ── */}
-      <div className={`alert-bar level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1} no-print`} style={{ display: isMissionMode ? 'none' : 'flex' }}>
+      <div className={`alert-bar level-${alertLevel >= 3 ? 3 : alertLevel === 2 ? 2 : 1} no-print`} style={{ display: (isMissionMode || isFieldMode) ? 'none' : 'flex' }}>
         <Circle fill={alertLevel >= 3 ? '#ef4444' : alertLevel === 2 ? '#f59e0b' : '#3b82f6'} color="transparent" size={14} style={{marginRight: 6}} />
         <span className="alert-bar-txt">
           {hasTmdWarning
@@ -1698,7 +1766,7 @@ export default function App() {
         <div className="main-3col" data-mobile-view={mobileActivePanel}>
 
           {/* LEFT: Route cards + toggles + log */}
-          <aside className="left-panel" style={{ display: isMissionMode ? 'none' : 'flex' }}>
+          <aside className="left-panel" style={{ display: (isMissionMode || isFieldMode) ? 'none' : 'flex' }}>
 
             {/* Route mode toggle — outside scroll container so it never scrolls away */}
             <div style={{ padding: '20px 20px 10px', flexShrink: 0 }}>
@@ -2266,12 +2334,19 @@ export default function App() {
               mapRedrawTick={mapRedrawTick}
               setSelectedCamera={setSelectedCamera}
               allRoutesData={allRoutesDataWithSandbox}
+              predictiveMode={predictiveMode}
+              predictiveFloodZones={predictiveMode ? computePredictiveZones(gistdaRiskPoints, simulationRainMultiplier, predictiveStep) : null}
             />
 
             <FloodAnimationControl
               floodRange={floodRange}
               setFloodRange={setFloodRange}
               isFloodLayerActive={toggles.flood}
+              simulationRainMultiplier={simulationRainMultiplier}
+              predictiveMode={predictiveMode}
+              setPredictiveMode={setPredictiveMode}
+              predictiveStep={predictiveStep}
+              setPredictiveStep={setPredictiveStep}
             />
 
             {/* Map legend */}
@@ -2336,7 +2411,7 @@ export default function App() {
           </div>
 
           {/* RIGHT: Data feeds + Alerts */}
-          <aside className="right-panel" style={{ display: isMissionMode ? 'none' : 'flex' }}>
+          <aside className="right-panel" style={{ display: (isMissionMode || isFieldMode) ? 'none' : 'flex' }}>
             <div className="right-panel-scroll">
 
               {/* Resources */}

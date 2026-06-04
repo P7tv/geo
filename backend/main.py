@@ -477,51 +477,121 @@ def _load_image_from_url(url: str):
     res.raise_for_status()
     return Image.open(io.BytesIO(res.content)).convert("RGB")
 
+import math
+
+# Global tracking history & cached congestion stats
+cctv_track_histories = {}
+cctv_last_congestion = {}
+
+def get_associated_detections(results, camera_id: str, h: int, w: int):
+    detections = []
+    v_count = 0
+    p_count = 0
+    vehicle_classes = [2, 3, 5, 7]
+    person_classes = [0]
+    camera_history = cctv_track_histories.get(camera_id, {})
+    
+    for r in results:
+        boxes = r.boxes
+        for box in boxes:
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = box.xyxyn[0].tolist()
+            
+            label = "unknown"
+            if cls_id in vehicle_classes:
+                label = "vehicle"
+                v_count += 1
+            elif cls_id in person_classes:
+                label = "person"
+                p_count += 1
+            else:
+                continue
+                
+            cx = (x1 + x2) / 2.0
+            cy = (y1 + y2) / 2.0
+            
+            matched_track_id = None
+            matched_speed = 0.0
+            matched_dir = "N/A"
+            matched_proj = []
+            
+            min_dist = 999.0
+            for t_id, hist in camera_history.items():
+                if len(hist) > 0:
+                    hx, hy, _ = hist[-1]
+                    dist = math.sqrt((cx - hx)**2 + (cy - hy)**2)
+                    if dist < min_dist and dist < 0.08: # Match threshold
+                        min_dist = dist
+                        matched_track_id = t_id
+                        
+            if matched_track_id is not None:
+                hist = camera_history[matched_track_id]
+                if len(hist) >= 5:
+                    x_old, y_old, t_old = hist[0]
+                    x_curr, y_curr, t_curr = hist[-1]
+                    dt = t_curr - t_old
+                    dx = x_curr - x_old
+                    dy = y_curr - y_old
+                    dist_val = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dt > 0:
+                        matched_speed = (dist_val / dt) * 150.0
+                        if matched_speed < 2.0:
+                            matched_speed = 0.0
+                            
+                    if dist_val > 0.02:
+                        angle = math.degrees(math.atan2(-dy, dx))
+                        if angle < 0: angle += 360
+                        if (angle >= 337.5) or (angle < 22.5): matched_dir = "E"
+                        elif (22.5 <= angle < 67.5): matched_dir = "NE"
+                        elif (67.5 <= angle < 112.5): matched_dir = "N"
+                        elif (112.5 <= angle < 157.5): matched_dir = "NW"
+                        elif (157.5 <= angle < 202.5): matched_dir = "W"
+                        elif (202.5 <= angle < 247.5): matched_dir = "SW"
+                        elif (247.5 <= angle < 292.5): matched_dir = "S"
+                        else: matched_dir = "SE"
+                        
+                        matched_proj = [[max(0.0, min(1.0, cx + dx * 1.2)), max(0.0, min(1.0, cy + dy * 1.2))]]
+            
+            detections.append({
+                "class": label,
+                "confidence": conf,
+                "bbox": [x1, y1, x2, y2],
+                "track_id": matched_track_id,
+                "speed": round(matched_speed, 1),
+                "direction": matched_dir,
+                "projected_path": matched_proj
+            })
+            
+    congestion_info = cctv_last_congestion.get(camera_id, {
+        "level": "low",
+        "desc": "Free Flow",
+        "avg_speed": 0.0,
+        "density": v_count,
+        "predominant_direction": "N/A"
+    })
+    
+    return {
+        "status": "success",
+        "counts": {"vehicles": v_count, "people": p_count},
+        "detections": detections,
+        "congestion": congestion_info
+    }
+
 @app.post("/detect_cctv")
-def detect_cctv(req: CCTVRequest):
+def detect_cctv(req: CCTVRequest, camera_id: str = "default"):
     if yolo_model is None:
         return {"status": "error", "message": "YOLO model not loaded"}
 
     try:
+        # Use provided camera_id query parameter, fallback to req.image_url
+        cam_key = camera_id if camera_id != "default" else req.image_url
         image = _load_image_from_url(req.image_url)
+        w, h = image.size
         
         results = yolo_model(image, verbose=False, conf=0.15)
-        
-        detections = []
-        v_count = 0
-        p_count = 0
-        
-        vehicle_classes = [2, 3, 5, 7]
-        person_classes = [0]
-        
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = box.xyxyn[0].tolist()
-                
-                label = "unknown"
-                if cls_id in vehicle_classes:
-                    label = "vehicle"
-                    v_count += 1
-                elif cls_id in person_classes:
-                    label = "person"
-                    p_count += 1
-                else:
-                    continue
-                    
-                detections.append({
-                    "class": label,
-                    "confidence": conf,
-                    "bbox": [x1, y1, x2, y2]
-                })
-                
-        return {
-            "status": "success",
-            "counts": {"vehicles": v_count, "people": p_count},
-            "detections": detections
-        }
+        return get_associated_detections(results, cam_key, h, w)
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -638,7 +708,7 @@ async def stream_cctv(url: str):
 from fastapi import Response
 
 @app.post("/process_frame")
-async def process_frame(request: Request):
+async def process_frame(request: Request, camera_id: str = "default"):
     if yolo_model is None:
         return Response(content=b"", status_code=500)
     try:
@@ -648,25 +718,195 @@ async def process_frame(request: Request):
         if frame is None:
             return Response(content=b"", status_code=400)
             
+        display_cam_id = camera_id
+        if "camid=" in camera_id:
+            display_cam_id = camera_id.split("camid=")[1].split("&")[0]
+        elif "/" in camera_id:
+            display_cam_id = camera_id.split("/")[-1]
+            
         vehicle_classes = [2, 3, 5, 7]
         person_classes = [0]
+        h, w, _ = frame.shape
         
-        results = yolo_model(frame, stream=False, verbose=False, conf=0.15)
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                cls_id = int(box.cls[0])
-                if cls_id in vehicle_classes or cls_id in person_classes:
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                    conf = float(box.conf[0])
+        # Ensure our camera history is initialized
+        if camera_id not in cctv_track_histories:
+            cctv_track_histories[camera_id] = {}
+            
+        try:
+            results = yolo_model.track(frame, persist=True, conf=0.15, verbose=False)
+        except Exception as track_err:
+            print(f"Tracking failed, falling back to standard detect: {track_err}")
+            results = yolo_model(frame, verbose=False, conf=0.15)
+            
+        current_speeds = []
+        track_directions = []
+        active_track_ids = set()
+        
+        r = results[0]
+        boxes = r.boxes
+        
+        track_ids = []
+        if hasattr(boxes, 'id') and boxes.id is not None:
+            track_ids = boxes.id.int().cpu().tolist()
+        else:
+            track_ids = [None] * len(boxes)
+            
+        for idx, box in enumerate(boxes):
+            cls_id = int(box.cls[0])
+            conf = float(box.conf[0])
+            x1, y1, x2, y2 = box.xyxy[0].tolist()
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            
+            is_vehicle = cls_id in vehicle_classes
+            is_person = cls_id in person_classes
+            
+            if not (is_vehicle or is_person):
+                continue
+                
+            label = "Vehicle" if is_vehicle else "Person"
+            color = (0, 255, 0) if label == "Vehicle" else (0, 0, 255)
+            
+            # Draw standard bounding box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            
+            t_id = track_ids[idx]
+            dir_str = ""
+            speed_kmh = 0.0
+            
+            if is_vehicle and t_id is not None:
+                active_track_ids.add(t_id)
+                # Normalized coordinates of center
+                cx = ((x1 + x2) / 2.0) / w
+                cy = ((y1 + y2) / 2.0) / h
+                
+                history = cctv_track_histories[camera_id].setdefault(t_id, [])
+                history.append((cx, cy, time.time()))
+                if len(history) > 30:
+                    history.pop(0)
                     
-                    label = "Vehicle" if cls_id in vehicle_classes else "Person"
-                    color = (0, 255, 0) if label == "Vehicle" else (0, 0, 255)
+                if len(history) >= 5:
+                    x_old, y_old, t_old = history[0]
+                    x_curr, y_curr, t_curr = history[-1]
                     
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                    dt = t_curr - t_old
+                    dx = x_curr - x_old
+                    dy = y_curr - y_old
+                    dist = math.sqrt(dx*dx + dy*dy)
                     
+                    if dt > 0:
+                        speed_kmh = (dist / dt) * 150.0
+                        if speed_kmh < 2.0:
+                            speed_kmh = 0.0
+                        current_speeds.append(speed_kmh)
+                        
+                    if dist > 0.02:
+                        angle = math.degrees(math.atan2(-dy, dx))
+                        if angle < 0: angle += 360
+                        
+                        if (angle >= 337.5) or (angle < 22.5): dir_str = "E"
+                        elif (22.5 <= angle < 67.5): dir_str = "NE"
+                        elif (67.5 <= angle < 112.5): dir_str = "N"
+                        elif (112.5 <= angle < 157.5): dir_str = "NW"
+                        elif (157.5 <= angle < 202.5): dir_str = "W"
+                        elif (202.5 <= angle < 247.5): dir_str = "SW"
+                        elif (247.5 <= angle < 292.5): dir_str = "S"
+                        else: dir_str = "SE"
+                        
+                        track_directions.append(dir_str)
+                        
+                        # Draw arrowhead pointing to projected location
+                        cx_px = int(cx * w)
+                        cy_px = int(cy * h)
+                        proj_x_px = int(max(0.0, min(1.0, cx + dx * 1.2)) * w)
+                        proj_y_px = int(max(0.0, min(1.0, cy + dy * 1.2)) * h)
+                        cv2.arrowedLine(frame, (cx_px, cy_px), (proj_x_px, proj_y_px), (0, 0, 255), 2, tipLength=0.35)
+                
+                # Draw path history
+                for j in range(1, len(history)):
+                    pt1 = (int(history[j-1][0] * w), int(history[j-1][1] * h))
+                    pt2 = (int(history[j][0] * w), int(history[j][1] * h))
+                    cv2.line(frame, pt1, pt2, (0, 242, 255), 1, cv2.LINE_AA)
+            
+            # Print text label
+            lbl = f"{label}"
+            if t_id is not None:
+                lbl += f" #{t_id}"
+            if dir_str:
+                lbl += f" ({dir_str})"
+            if speed_kmh > 0:
+                lbl += f" {speed_kmh:.0f}km/h"
+            else:
+                lbl += f" {conf:.2f}"
+            cv2.putText(frame, lbl, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
+            
+        # Cleanup inactive tracks
+        now_time = time.time()
+        to_del = []
+        for t_id, hist in cctv_track_histories[camera_id].items():
+            if t_id not in active_track_ids:
+                if len(hist) > 0 and (now_time - hist[-1][2]) > 5.0:
+                    to_del.append(t_id)
+        for t_id in to_del:
+            del cctv_track_histories[camera_id][t_id]
+            
+        # Determine Congestion Level
+        total_veh = sum(1 for box in boxes if int(box.cls[0]) in vehicle_classes)
+        avg_speed = np.mean(current_speeds) if current_speeds else None
+        
+        congestion_level = "low"
+        congestion_color = (0, 255, 0)
+        congestion_desc = "Free Flow"
+        
+        if avg_speed is not None:
+            if total_veh >= 6:
+                if avg_speed < 15.0 or (sum(1 for s in current_speeds if s < 10.0) / len(current_speeds) >= 0.5):
+                    congestion_level = "high"
+                    congestion_color = (0, 0, 255)
+                    congestion_desc = "Traffic Jam"
+                elif avg_speed < 25.0:
+                    congestion_level = "medium"
+                    congestion_color = (0, 165, 255)
+                    congestion_desc = "Slow Traffic"
+            elif total_veh >= 4:
+                if avg_speed < 20.0:
+                    congestion_level = "medium"
+                    congestion_color = (0, 165, 255)
+                    congestion_desc = "Slow Traffic"
+        else:
+            # Fallback based on density only when we don't have speed telemetry yet
+            if total_veh >= 15:
+                congestion_level = "high"
+                congestion_color = (0, 0, 255)
+                congestion_desc = "Traffic Jam"
+            elif total_veh >= 8:
+                congestion_level = "medium"
+                congestion_color = (0, 165, 255)
+                congestion_desc = "Slow Traffic"
+                
+        predominant_dir = "N/A"
+        if track_directions:
+            from collections import Counter
+            predominant_dir = Counter(track_directions).most_common(1)[0][0]
+            
+        cctv_last_congestion[camera_id] = {
+            "level": congestion_level,
+            "desc": congestion_desc,
+            "avg_speed": float(avg_speed) if avg_speed is not None else 0.0,
+            "density": total_veh,
+            "predominant_direction": predominant_dir,
+            "timestamp": now_time
+        }
+        
+        # Draw transparent HUD overlay banner
+        cv2.rectangle(frame, (10, 10), (280, 80), (15, 23, 42), -1)
+        cv2.rectangle(frame, (10, 10), (280, 80), (100, 100, 100), 1)
+        
+        flow_speed_str = f"{avg_speed:.1f} km/h" if avg_speed is not None else "Calculating..."
+        cv2.putText(frame, f"CCTV TELEMETRY: {display_cam_id.upper()}", (18, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"VEHICLES: {total_veh} | PEOPLE: {sum(1 for box in boxes if int(box.cls[0]) in person_classes)}", (18, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"FLOW SPEED: {flow_speed_str} ({predominant_dir})", (18, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"STATUS: {congestion_desc.upper()}", (18, 73), cv2.FONT_HERSHEY_SIMPLEX, 0.35, congestion_color, 1, cv2.LINE_AA)
+        
         ret, buffer = cv2.imencode('.jpg', frame)
         if not ret:
             return Response(content=b"", status_code=500)
@@ -676,7 +916,7 @@ async def process_frame(request: Request):
         return Response(content=b"", status_code=500)
 
 @app.post("/detect_cctv_bytes")
-async def detect_cctv_bytes(request: Request):
+async def detect_cctv_bytes(request: Request, camera_id: str = "default"):
     if yolo_model is None:
         return {"status": "error", "message": "YOLO model not loaded"}
     try:
@@ -686,43 +926,13 @@ async def detect_cctv_bytes(request: Request):
         if frame is None:
             return {"status": "error", "message": "Invalid image data"}
             
+        h, w, _ = frame.shape
         results = yolo_model(frame, verbose=False, conf=0.15)
-        
-        detections = []
-        v_count = 0
-        p_count = 0
-        
-        vehicle_classes = [2, 3, 5, 7]
-        person_classes = [0]
-        
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = box.xyxyn[0].tolist()
-                
-                label = "unknown"
-                if cls_id in vehicle_classes:
-                    label = "vehicle"
-                    v_count += 1
-                elif cls_id in person_classes:
-                    label = "person"
-                    p_count += 1
-                else:
-                    continue
-                    
-                detections.append({
-                    "class": label,
-                    "confidence": conf,
-                    "bbox": [x1, y1, x2, y2]
-                })
-                
-        return {
-            "status": "success",
-            "counts": {"vehicles": v_count, "people": p_count},
-            "detections": detections
-        }
+        return get_associated_detections(results, camera_id, h, w)
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+@app.get("/all_cctv_congestion")
+def get_all_cctv_congestion():
+    return cctv_last_congestion
 

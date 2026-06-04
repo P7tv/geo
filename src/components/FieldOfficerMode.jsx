@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import { getAiBriefing, } from '../services/vehicleApi';
 import { getWaterLevels, getTmdWarnings } from '../services/externalApi';
 import '../styles/FieldOfficerMode.css';
@@ -52,6 +54,73 @@ export default function FieldOfficerMode({
   const [gpsCoord, setGpsCoord] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+
+  // Tactical / walkie-talkie states
+  const [talkieChannel, setTalkieChannel] = useState('CH-01');
+  const [pttActive, setPttActive] = useState(false);
+  const [mockImage, setMockImage] = useState(null);
+  const [radioLogs, setRadioLogs] = useState([
+    { id: 1, time: '04:12:05', channel: 'CH-01', msg: 'ได้รับแจ้งเหตุน้ำล้นตลิ่งบริเวณสะพานพญามังราย' },
+    { id: 2, time: '04:10:11', channel: 'CH-01', msg: 'กำลังพล อปพร. ชุดที่ 2 กำลังเดินทางไปจุดตรวจ' },
+  ]);
+
+  // Audio synthesis helper for Walkie-Talkie
+  const playRadioSound = (type) => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      
+      if (type === 'start') {
+        // Radio mic opening click
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.1);
+
+        // Brief burst of static noise
+        const bufferSize = ctx.sampleRate * 0.08;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = Math.random() * 2 - 1;
+        }
+        const noise = ctx.createBufferSource();
+        noise.buffer = buffer;
+        const noiseGain = ctx.createGain();
+        noiseGain.gain.setValueAtTime(0.05, ctx.currentTime);
+        noiseGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+        noise.connect(noiseGain);
+        noiseGain.connect(ctx.destination);
+        noise.start();
+      } else if (type === 'end') {
+        // Radio mic closing beep (double beep)
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc1.frequency.setValueAtTime(660, ctx.currentTime);
+        osc2.frequency.setValueAtTime(440, ctx.currentTime + 0.08);
+        
+        gain.gain.setValueAtTime(0.08, ctx.currentTime);
+        gain.gain.setValueAtTime(0.08, ctx.currentTime + 0.08);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.16);
+
+        osc1.start();
+        osc1.stop(ctx.currentTime + 0.08);
+        osc2.start(ctx.currentTime + 0.08);
+        osc2.stop(ctx.currentTime + 0.16);
+      }
+    } catch (_) {}
+  };
 
   // ทีม
   const [teamLocations, setTeamLocations] = useState(MOCK_TEAM);
@@ -113,9 +182,21 @@ export default function FieldOfficerMode({
         getTmdWarnings(selectedProvince),
         getWaterLevels(selectedProvince),
       ]);
-      if (briefing.status === 'fulfilled') setBriefingText(briefing.value?.text || briefing.value || '');
-      if (warnings.status === 'fulfilled') setBriefingWarnings(warnings.value?.slice(0, 3) || []);
-      if (levels.status === 'fulfilled') setBriefingLevels((levels.value || []).slice(0, 4));
+      if (briefing.status === 'fulfilled') {
+        const val = briefing.value;
+        const text = typeof val === 'string' ? val : (val?.briefing || val?.text || '');
+        setBriefingText(text);
+      }
+      if (warnings.status === 'fulfilled') {
+        const val = warnings.value;
+        const arr = Array.isArray(val) ? val : (val?.Warning || val?.warnings || val?.data || []);
+        setBriefingWarnings(arr.slice(0, 3));
+      }
+      if (levels.status === 'fulfilled') {
+        const val = levels.value;
+        const arr = Array.isArray(val) ? val : [];
+        setBriefingLevels(arr.slice(0, 4));
+      }
     } catch {
       // ignore
     } finally {
@@ -146,7 +227,7 @@ export default function FieldOfficerMode({
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        route: activeRoute.name || activeRoute.id,
+        routeId: activeRoute.id,
         reason: `[เจ้าหน้าที่] ยืนยันเส้นทาง — ${activeRoute.name || activeRoute.id}`,
         officer: 'อปพร.',
       }),
@@ -168,6 +249,7 @@ export default function FieldOfficerMode({
           lon: gpsCoord?.lon,
           province: selectedProvince,
           timestamp: new Date().toISOString(),
+          imageUrl: mockImage,
         }),
       });
       setSubmitSuccess(true);
@@ -176,6 +258,7 @@ export default function FieldOfficerMode({
         setReportType(null);
         setSeverity(null);
         setNote('');
+        setMockImage(null);
         setActiveTab(null);
       }, 2000);
     } catch {
@@ -190,6 +273,7 @@ export default function FieldOfficerMode({
   const TABS = [
     { id: 'nav', icon: '🗺️', label: 'นำทาง' },
     { id: 'report', icon: '📋', label: 'รายงาน' },
+    { id: 'talkie', icon: '📻', label: 'วิทยุ ปภ.' },
     { id: 'team', icon: '👥', label: 'ทีม' },
     { id: 'briefing', icon: '📢', label: 'Briefing' },
   ];
@@ -215,7 +299,33 @@ export default function FieldOfficerMode({
 
       {/* Map area — simple embedded Sphere-like container */}
       <div className="fo-map-area">
-        <FieldMap routes={routes} activeRouteId={activeRouteId} teamLocations={activeTab === 'team' ? teamLocations : []} />
+        <FieldMap routes={routes} activeRouteId={activeRouteId} teamLocations={activeTab === 'team' ? teamLocations : []} gpsCoord={gpsCoord} />
+
+        {/* Tactical HUD */}
+        <div className="tactical-hud">
+          <div className="hud-header">
+            <span className="hud-pulsar live"></span>
+            <span className="hud-title">TACTICAL HUD</span>
+          </div>
+          <div className="hud-grid">
+            <div className="hud-item">
+              <span className="hud-label">📡 SAT CONNECTION</span>
+              <span className="hud-val pulsing">ACTIVE (LTE+SAT)</span>
+            </div>
+            <div className="hud-item">
+              <span className="hud-label">🧭 COMPASS BEARING</span>
+              <span className="hud-val">142° SE</span>
+            </div>
+            <div className="hud-item">
+              <span className="hud-label">🏃 SPEED OVER GROUND</span>
+              <span className="hud-val">{gpsCoord ? '4.2 km/h' : '0.0 km/h'}</span>
+            </div>
+            <div className="hud-item">
+              <span className="hud-label">📐 GPS ACCURACY</span>
+              <span className="hud-val">±3.2 meters</span>
+            </div>
+          </div>
+        </div>
 
         {/* Floating Quick Status Card */}
         {bestRoute && !quickDismissed && (
@@ -359,13 +469,43 @@ export default function FieldOfficerMode({
                         <button
                           key={t.id}
                           className={`fo-type-btn${reportType === t.id ? ' selected' : ''}`}
-                          onClick={() => setReportType(t.id)}
+                          onClick={() => {
+                            setReportType(t.id);
+                            if (t.id === 'flood') setMockImage('/images/flood_road_chiang_rai.png');
+                            else if (t.id === 'blocked') setMockImage('/images/blocked_road_barrier.png');
+                            else if (t.id === 'victim') setMockImage('/images/rescue_incident.png');
+                            else setMockImage(null);
+                          }}
                         >
                           <span className="fo-type-icon">{t.icon}</span>
                           <span className="fo-type-label">{t.label}</span>
                         </button>
                       ))}
                     </div>
+
+                    {/* Image Attachment Preview */}
+                    {reportType && (
+                      <div className="fo-attachment-section" style={{ marginBottom: 14 }}>
+                        <label className="fo-field-label">ภาพถ่ายจุดปฏิบัติงาน</label>
+                        <div className="fo-image-preview-container">
+                          {mockImage ? (
+                            <div className="fo-image-preview" style={{ position: 'relative', borderRadius: 10, overflow: 'hidden' }}>
+                              <img src={mockImage} alt="Incident preview" style={{ width: '100%', height: 140, objectFit: 'cover', borderRadius: 10 }} />
+                              <button className="fo-remove-image-btn" onClick={() => setMockImage(null)} style={{ position: 'absolute', top: 8, right: 8, background: 'rgba(0,0,0,0.7)', color: 'white', border: 'none', borderRadius: '50%', width: 24, height: 24, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>✕</button>
+                              <div className="fo-image-overlay-badge" style={{ position: 'absolute', bottom: 8, left: 8, background: 'rgba(245,158,11,0.95)', color: '#000', fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 4 }}>📷 ภาพจำลองเหตุการณ์ในพิกัด</div>
+                            </div>
+                          ) : (
+                            <button className="fo-add-image-btn" onClick={() => {
+                              if (reportType === 'flood') setMockImage('/images/flood_road_chiang_rai.png');
+                              else if (reportType === 'blocked') setMockImage('/images/blocked_road_barrier.png');
+                              else if (reportType === 'victim') setMockImage('/images/rescue_incident.png');
+                            }} style={{ width: '100%', height: 100, border: '2px dashed #334155', borderRadius: 10, background: '#1e293b', color: '#94a3b8', fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              <span>➕ แนบภาพถ่ายเหตุการณ์ในพื้นที่</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     <label className="fo-field-label">ความรุนแรง</label>
                     <div className="fo-severity-row">
@@ -397,7 +537,7 @@ export default function FieldOfficerMode({
                     <label className="fo-field-label">หมายเหตุ (ไม่บังคับ)</label>
                     <textarea
                       className="fo-note-input"
-                      rows={3}
+                      rows={2}
                       placeholder="รายละเอียดเพิ่มเติม เช่น ระดับน้ำ, จำนวนผู้ติดอยู่..."
                       value={note}
                       onChange={e => setNote(e.target.value)}
@@ -412,6 +552,109 @@ export default function FieldOfficerMode({
                     </button>
                   </>
                 )}
+              </div>
+            )}
+
+            {/* ── Tab: วิทยุ ปภ. ── */}
+            {activeTab === 'talkie' && (
+              <div className="tactical-talkie-panel">
+                <div className="talkie-meta-row">
+                  <div className="talkie-channel-select">
+                    <label>ช่องสัญญาณวิทยุ</label>
+                    <select
+                      value={talkieChannel}
+                      onChange={e => setTalkieChannel(e.target.value)}
+                    >
+                      <option value="CH-01">CH-01: ปภ.จังหวัด (หลัก)</option>
+                      <option value="CH-02">CH-02: อาสากู้ชีพ (เสริม)</option>
+                      <option value="CH-03">CH-03: ประสานงานกู้ภัย</option>
+                    </select>
+                  </div>
+                  <div className="talkie-signal-strength">
+                    <span>ความชัดเจน: 99.4%</span>
+                    <span className="signal-bar full">📶</span>
+                  </div>
+                </div>
+
+                <div className="talkie-display">
+                  <div className="talkie-freq">154.400 MHz</div>
+                  <div className="talkie-status-text">
+                    {pttActive ? '🎤 กำลังส่งสัญญาณวิทยุ...' : '🟢 สแตนด์บายรับฟัง'}
+                  </div>
+                  
+                  {/* Waveform Visualizer */}
+                  <div className={`talkie-waveform ${pttActive ? 'active' : ''}`}>
+                    <div className="wave-bar"></div>
+                    <div className="wave-bar"></div>
+                    <div className="wave-bar"></div>
+                    <div className="wave-bar"></div>
+                    <div className="wave-bar"></div>
+                    <div className="wave-bar"></div>
+                    <div className="wave-bar"></div>
+                    <div className="wave-bar"></div>
+                    <div className="wave-bar"></div>
+                  </div>
+                </div>
+
+                <div className="talkie-controls">
+                  <button
+                    className={`ptt-btn ${pttActive ? 'active' : ''}`}
+                    onMouseDown={() => {
+                      setPttActive(true);
+                      playRadioSound('start');
+                    }}
+                    onMouseUp={() => {
+                      setPttActive(false);
+                      playRadioSound('end');
+                      setRadioLogs(prev => [
+                        {
+                          id: Date.now(),
+                          time: new Date().toLocaleTimeString('th-TH'),
+                          channel: talkieChannel,
+                          msg: '[ส่งสัญญาณสั้น] ยืนยันพิกัดน้ำท่วมคืบหน้าและการเตรียมการจุดปลอดภัย'
+                        },
+                        ...prev.slice(0, 4)
+                      ]);
+                    }}
+                    onTouchStart={(e) => {
+                      e.preventDefault();
+                      setPttActive(true);
+                      playRadioSound('start');
+                    }}
+                    onTouchEnd={(e) => {
+                      e.preventDefault();
+                      setPttActive(false);
+                      playRadioSound('end');
+                      setRadioLogs(prev => [
+                        {
+                          id: Date.now(),
+                          time: new Date().toLocaleTimeString('th-TH'),
+                          channel: talkieChannel,
+                          msg: '[ส่งสัญญาณสั้น] ยืนยันพิกัดน้ำท่วมคืบหน้าและการเตรียมการจุดปลอดภัย'
+                        },
+                        ...prev.slice(0, 4)
+                      ]);
+                    }}
+                  >
+                    <span className="ptt-icon">🎙️</span>
+                    <span className="ptt-label">กดค้างเพื่อคุย (PTT)</span>
+                  </button>
+                </div>
+
+                <div className="talkie-logs">
+                  <div className="talkie-logs-title">📻 ประวัติการคุยวิทยุล่าสุด</div>
+                  {radioLogs.length === 0 ? (
+                    <p className="fo-no-data" style={{ padding: '8px' }}>ไม่มีประวัติการส่งสัญญาณวิทยุในรอบนี้</p>
+                  ) : (
+                    radioLogs.map(log => (
+                      <div key={log.id} className="talkie-log-item">
+                        <span className="log-time">{log.time}</span>
+                        <span className="log-channel">{log.channel}</span>
+                        <span className="log-msg">{log.msg}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             )}
 
@@ -468,7 +711,7 @@ export default function FieldOfficerMode({
                         <span className="fo-water-name">{s.name || s.station_name || `สถานี ${i + 1}`}</span>
                         <span
                           className="fo-water-val"
-                          style={{ color: s.status === 'danger' ? 'var(--danger)' : s.status === 'warning' ? 'var(--warn)' : 'var(--safe)' }}
+                          style={{ color: s.situation_level === 3 ? 'var(--danger)' : s.situation_level === 2 ? 'var(--warn)' : 'var(--safe)' }}
                         >
                           {s.current_level != null ? `${s.current_level} m` : s.level != null ? `${s.level} m` : '—'}
                         </span>
@@ -536,10 +779,10 @@ function normalizeCoords(raw) {
 }
 
 // Simple Leaflet map for field officer
-function FieldMap({ routes, activeRouteId, teamLocations }) {
+function FieldMap({ routes, activeRouteId, teamLocations, gpsCoord }) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
-  const layersRef = useRef({ routes: {}, teams: {} });
+  const layersRef = useRef({ routes: {}, teams: {}, self: null });
 
   const drawLayers = useCallback((L, map) => {
     const layers = layersRef.current;
@@ -570,23 +813,53 @@ function FieldMap({ routes, activeRouteId, teamLocations }) {
       try { map.fitBounds(activeBounds, { padding: [40, 40] }); } catch (_) {}
     }
 
+    // Clear self GPS marker
+    if (layers.self) {
+      try { map.removeLayer(layers.self); } catch (_) {}
+      layers.self = null;
+    }
+
+    // Draw self GPS marker with animated pulsing ring
+    if (gpsCoord && gpsCoord.lat && gpsCoord.lon) {
+      const selfIcon = L.divIcon({
+        html: `
+          <div class="tactical-self-marker">
+            <div class="tactical-self-pulse"></div>
+            <div class="tactical-self-dot"></div>
+          </div>
+        `,
+        iconSize: [20, 20],
+        className: '',
+      });
+      layers.self = L.marker([parseFloat(gpsCoord.lat), parseFloat(gpsCoord.lon)], { icon: selfIcon })
+        .addTo(map)
+        .bindPopup('ตำแหน่งของคุณ (เจ้าหน้าที่ อปพร.)');
+    }
+
     // Clear team markers
     Object.values(layers.teams).forEach(l => { try { map.removeLayer(l); } catch (_) {} });
     layers.teams = {};
 
     teamLocations.forEach(m => {
       if (!m.lat || !m.lon) return;
+      const pulseColor = m.status === 'active' ? '#22c55e' : '#64748b';
       const icon = L.divIcon({
-        html: `<div style="background:${m.status === 'active' ? '#22c55e' : '#475569'};width:12px;height:12px;border-radius:50%;border:2px solid white;"></div>`,
-        iconSize: [12, 12],
+        html: `
+          <div class="tactical-team-marker">
+            <div class="tactical-team-pulse" style="background: ${pulseColor}aa"></div>
+            <div class="tactical-team-dot" style="background: ${pulseColor}"></div>
+            <span class="tactical-team-badge">${m.role}</span>
+          </div>
+        `,
+        iconSize: [16, 16],
         className: '',
       });
       const marker = L.marker([m.lat, m.lon], { icon })
         .addTo(map)
-        .bindPopup(`${m.name} (${m.status === 'active' ? 'ออนไลน์' : 'ออฟไลน์'})`);
+        .bindPopup(`<strong>${m.name}</strong><br/>บทบาท: ${m.role}<br/>สถานะ: ${m.status === 'active' ? 'ออนไลน์' : 'ออฟไลน์'}<br/>พิกัด: ${m.lat.toFixed(4)}, ${m.lon.toFixed(4)}`);
       layers.teams[m.id] = marker;
     });
-  }, [routes, activeRouteId, teamLocations]);
+  }, [routes, activeRouteId, teamLocations, gpsCoord]);
 
   // Init map once
   useEffect(() => {
@@ -594,53 +867,38 @@ function FieldMap({ routes, activeRouteId, teamLocations }) {
     if (!container) return;
     let mounted = true;
 
-    const init = async () => {
-      if (!document.getElementById('fo-leaflet-css')) {
-        const link = document.createElement('link');
-        link.id = 'fo-leaflet-css';
-        link.rel = 'stylesheet';
-        link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
-        document.head.appendChild(link);
-      }
-      if (!window.L) {
-        await new Promise((resolve, reject) => {
-          const s = document.createElement('script');
-          s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
-          s.onload = resolve; s.onerror = reject;
-          document.head.appendChild(s);
-        });
-      }
+    const init = () => {
       if (!mounted || mapRef.current) return;
 
       // Clear any stale Leaflet state from StrictMode double-invoke
       if (container._leaflet_id) delete container._leaflet_id;
 
-      const map = window.L.map(container, { zoomControl: false }).setView([19.908, 99.832], 11);
+      const map = L.map(container, { zoomControl: false }).setView([19.908, 99.832], 11);
       mapRef.current = map;
 
-      window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OSM', maxZoom: 18,
       }).addTo(map);
-      window.L.control.zoom({ position: 'topright' }).addTo(map);
-      drawLayers(window.L, map);
+      L.control.zoom({ position: 'topright' }).addTo(map);
+      drawLayers(L, map);
     };
 
-    init().catch(() => {});
+    init();
 
     return () => {
       mounted = false;
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
-        layersRef.current = { routes: {}, teams: {} };
+        layersRef.current = { routes: {}, teams: {}, self: null };
       }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Update layers when props change after init
   useEffect(() => {
-    if (!mapRef.current || !window.L) return;
-    drawLayers(window.L, mapRef.current);
+    if (!mapRef.current) return;
+    drawLayers(L, mapRef.current);
   }, [drawLayers]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%', background: '#1e293b' }} />;

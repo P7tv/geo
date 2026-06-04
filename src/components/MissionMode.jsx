@@ -370,23 +370,54 @@ export default function MissionMode({
 
                     // YOLO result — render bounding boxes from detect_cctv
                     if (yoloData?.detections?.length > 0) {
-                      return yoloData.detections.map((det, idx) => {
-                        const [x1, y1, x2, y2] = det.bbox;
-                        const isPerson = det.class === 'person';
-                        const color = isPerson ? '#3b82f6' : '#00ff00';
-                        return (
-                          <div key={idx} style={{
-                            position: 'absolute',
-                            left: `${x1 * 100}%`, top: `${y1 * 100}%`,
-                            width: `${(x2 - x1) * 100}%`, height: `${(y2 - y1) * 100}%`,
-                            border: `1.5px solid ${color}`, zIndex: 5, pointerEvents: 'none'
-                          }}>
-                            <span style={{ position: 'absolute', top: -14, left: 0, color: '#fff', fontSize: 8, fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', background: color, padding: '0 3px', borderRadius: '2px 2px 0 0' }}>
-                              {det.class.toUpperCase()} {(det.confidence * 100).toFixed(0)}%
-                            </span>
-                          </div>
-                        );
-                      });
+                      return (
+                        <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 5 }}>
+                          {yoloData.detections.map((det, idx) => {
+                            const [x1, y1, x2, y2] = det.bbox;
+                            const isPerson = det.class === 'person';
+                            const color = isPerson ? '#3b82f6' : '#00ff00';
+                            const cx = (x1 + x2) / 2;
+                            const cy = (y1 + y2) / 2;
+                            const proj = det.projected_path?.[0];
+                            return (
+                              <div key={idx}>
+                                <div style={{
+                                  position: 'absolute',
+                                  left: `${x1 * 100}%`, top: `${y1 * 100}%`,
+                                  width: `${(x2 - x1) * 100}%`, height: `${(y2 - y1) * 100}%`,
+                                  border: `1.5px solid ${color}`, pointerEvents: 'none'
+                                }}>
+                                  <span style={{ position: 'absolute', top: -14, left: 0, color: '#fff', fontSize: 8, fontFamily: 'var(--font-mono)', whiteSpace: 'nowrap', background: color, padding: '0 3px', borderRadius: '2px 2px 0 0' }}>
+                                    {det.class.toUpperCase()}
+                                    {det.track_id !== null && det.track_id !== undefined ? ` #${det.track_id}` : ''}
+                                    {det.direction && det.direction !== 'N/A' ? ` (${det.direction})` : ''}
+                                    {det.speed > 0 ? ` ${det.speed.toFixed(0)}km/h` : ''}
+                                  </span>
+                                </div>
+                                {proj && (
+                                  <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}>
+                                    <defs>
+                                      <marker id={`arrow-${idx}`} viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                                        <path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444" />
+                                      </marker>
+                                    </defs>
+                                    <line 
+                                      x1={`${cx * 100}%`} 
+                                      y1={`${cy * 100}%`} 
+                                      x2={`${proj[0] * 100}%`} 
+                                      y2={`${proj[1] * 100}%`} 
+                                      stroke="#ef4444" 
+                                      strokeWidth="1.5" 
+                                      strokeDasharray="2,2"
+                                      markerEnd={`url(#arrow-${idx})`} 
+                                    />
+                                  </svg>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
                     }
 
                     if (yoloLoading) {
@@ -422,6 +453,58 @@ export default function MissionMode({
                 </div>
               </div>
             </div>
+
+            {/* Advanced Traffic Flow Telemetry */}
+            {yoloData?.congestion && (
+              <div style={{
+                background: 'rgba(15, 23, 42, 0.6)',
+                border: '1px solid var(--border)',
+                borderRadius: '8px',
+                padding: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '11px',
+                color: 'var(--text-2)'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: 'var(--text-3)' }}>🚦 TRAFFIC FLOW:</span>
+                  {(() => {
+                    const level = yoloData.congestion.level?.toUpperCase();
+                    const color = level === 'HIGH' ? 'var(--danger)' : level === 'MEDIUM' ? '#f59e0b' : 'var(--safe)';
+                    return (
+                      <span style={{ 
+                        color: color, 
+                        fontWeight: 'bold', 
+                        background: `${color}15`, 
+                        padding: '2px 8px', 
+                        borderRadius: '4px',
+                        border: `1px solid ${color}30`
+                      }}>
+                        {yoloData.congestion.desc?.toUpperCase() || level}
+                      </span>
+                    );
+                  })()}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '4px' }}>
+                  <div style={{ background: 'rgba(0, 0, 0, 0.2)', padding: '6px', borderRadius: '4px' }}>
+                    <span style={{ color: 'var(--text-3)', fontSize: '9px', display: 'block' }}>FLOW SPEED</span>
+                    <span style={{ color: 'var(--text-1)', fontSize: '13px', fontWeight: 'bold' }}>
+                      {yoloData.congestion.avg_speed ? `${yoloData.congestion.avg_speed.toFixed(1)} km/h` : '0.0 km/h'}
+                    </span>
+                  </div>
+                  <div style={{ background: 'rgba(0, 0, 0, 0.2)', padding: '6px', borderRadius: '4px' }}>
+                    <span style={{ color: 'var(--text-3)', fontSize: '9px', display: 'block' }}>MAIN HEADING</span>
+                    <span style={{ color: 'var(--text-1)', fontSize: '13px', fontWeight: 'bold' }}>
+                      {yoloData.congestion.predominant_direction && yoloData.congestion.predominant_direction !== 'N/A' 
+                        ? `${yoloData.congestion.predominant_direction} Bound` 
+                        : 'N/A'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* AI Dispatch Console */}
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>

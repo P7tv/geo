@@ -183,7 +183,8 @@
   background: #0f172a;
   border-top: 1px solid #1e293b;
   flex-shrink: 0;
-  z-index: 20;
+  position: relative;
+  z-index: 100000;
 }
 
 .fo-nav-btn {
@@ -224,19 +225,19 @@
   position: absolute;
   inset: 0;
   background: rgba(0,0,0,0.5);
-  z-index: 15;
+  z-index: 99998;
 }
 
 .fo-sheet {
   position: absolute;
-  bottom: 0;
+  bottom: 56px;
   left: 0;
   right: 0;
   height: 62%;
   background: #0f172a;
   border-top: 1px solid #334155;
   border-radius: 16px 16px 0 0;
-  z-index: 16;
+  z-index: 99999;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -806,4 +807,381 @@
 
 .fo-entry-btn:hover {
   background: rgba(245, 158, 11, 0.22);
+}
+
+/* ── Tactical GPS Self Marker & Team Markers ── */
+.tactical-self-marker {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tactical-self-pulse {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  background: rgba(59, 130, 246, 0.4);
+  border-radius: 50%;
+  animation: fo-marker-pulse 1.8s infinite ease-out;
+}
+
+.tactical-self-dot {
+  width: 10px;
+  height: 10px;
+  background: #3b82f6;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 6px #3b82f6;
+}
+
+.tactical-team-marker {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tactical-team-pulse {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  animation: fo-marker-pulse 2s infinite ease-out;
+}
+
+.tactical-team-dot {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid #fff;
+  border-radius: 50%;
+}
+
+.tactical-team-badge {
+  position: absolute;
+  top: -14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.85);
+  color: #94a3b8;
+  font-size: 8px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 0.5px solid #475569;
+  white-space: nowrap;
+  pointer-events: none;
+  font-weight: bold;
+}
+
+@keyframes fo-marker-pulse {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* ── Tactical HUD Panel ── */
+.tactical-hud {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  border-radius: 8px;
+  padding: 6px 10px;
+  z-index: 10;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+  width: 140px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+  font-family: var(--font-th);
+}
+
+.hud-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+  border-bottom: 0.5px solid rgba(255,255,255,0.1);
+  padding-bottom: 2px;
+}
+
+.hud-pulsar.live {
+  width: 5px;
+  height: 5px;
+  background: #f59e0b;
+  border-radius: 50%;
+  animation: hud-glow 1.2s infinite alternate;
+}
+
+@keyframes hud-glow {
+  0% { box-shadow: 0 0 2px #f59e0b; }
+  100% { box-shadow: 0 0 8px #f59e0b; }
+}
+
+.hud-title {
+  color: #f59e0b;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.hud-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.hud-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.hud-label {
+  color: #64748b;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.hud-val {
+  color: #f1f5f9;
+  font-size: 9px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+}
+
+.hud-val.pulsing {
+  color: #22c55e;
+  animation: hud-val-pulse 1.5s infinite alternate;
+}
+
+@keyframes hud-val-pulse {
+  0% { opacity: 0.7; }
+  100% { opacity: 1; }
+}
+
+/* ── Tactical Walkie-Talkie Panel ── */
+.tactical-talkie-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-family: var(--font-th);
+}
+
+.talkie-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #1e293b;
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid #334155;
+}
+
+.talkie-channel-select {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.talkie-channel-select label {
+  font-size: 9px;
+  color: #64748b;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.talkie-channel-select select {
+  background: #0f172a;
+  border: 1px solid #475569;
+  color: #f8fafc;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: bold;
+  font-family: var(--font-th);
+  outline: none;
+}
+
+.talkie-signal-strength {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.talkie-signal-strength span {
+  font-size: 9px;
+  color: #22c55e;
+  font-weight: bold;
+}
+
+.talkie-display {
+  background: #090d16;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 12px;
+  padding: 16px;
+  text-align: center;
+  box-shadow: inset 0 0 15px rgba(245, 158, 11, 0.1);
+  position: relative;
+}
+
+.talkie-freq {
+  font-size: 20px;
+  font-weight: 900;
+  color: #f59e0b;
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
+  text-shadow: 0 0 8px rgba(245, 158, 11, 0.4);
+}
+
+.talkie-status-text {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.talkie-waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 24px;
+  margin-top: 10px;
+}
+
+.wave-bar {
+  width: 3px;
+  height: 4px;
+  background: rgba(245, 158, 11, 0.3);
+  border-radius: 1.5px;
+  transition: height 0.15s, background-color 0.15s;
+}
+
+.talkie-waveform.active .wave-bar {
+  background: #f59e0b;
+  box-shadow: 0 0 4px rgba(245, 158, 11, 0.5);
+  animation: talkie-wave 0.8s infinite ease-in-out alternate;
+}
+
+.talkie-waveform.active .wave-bar:nth-child(1) { animation-delay: 0.1s; height: 16px; }
+.talkie-waveform.active .wave-bar:nth-child(2) { animation-delay: 0.3s; height: 22px; }
+.talkie-waveform.active .wave-bar:nth-child(3) { animation-delay: 0.2s; height: 12px; }
+.talkie-waveform.active .wave-bar:nth-child(4) { animation-delay: 0.5s; height: 24px; }
+.talkie-waveform.active .wave-bar:nth-child(5) { animation-delay: 0.4s; height: 18px; }
+.talkie-waveform.active .wave-bar:nth-child(6) { animation-delay: 0.6s; height: 20px; }
+.talkie-waveform.active .wave-bar:nth-child(7) { animation-delay: 0.2s; height: 10px; }
+.talkie-waveform.active .wave-bar:nth-child(8) { animation-delay: 0.7s; height: 15px; }
+.talkie-waveform.active .wave-bar:nth-child(9) { animation-delay: 0.3s; height: 8px; }
+
+@keyframes talkie-wave {
+  0% { transform: scaleY(0.4); }
+  100% { transform: scaleY(1.2); }
+}
+
+.talkie-controls {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0;
+}
+
+.ptt-btn {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #f97316 0%, #ea580c 100%);
+  border: 6px solid #1e293b;
+  box-shadow: 0 6px 20px rgba(234, 88, 12, 0.4), inset 0 2px 5px rgba(255,255,255,0.3);
+  color: white;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-th);
+  transition: transform 0.1s, box-shadow 0.15s;
+}
+
+.ptt-btn:active, .ptt-btn.active {
+  transform: scale(0.95);
+  background: radial-gradient(circle, #ea580c 0%, #c2410c 100%);
+  box-shadow: 0 2px 10px rgba(234, 88, 12, 0.2), inset 0 4px 10px rgba(0,0,0,0.5);
+  border-color: #f97316;
+}
+
+.ptt-icon {
+  font-size: 32px;
+  margin-bottom: 2px;
+}
+
+.ptt-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.talkie-logs {
+  background: #1e293b;
+  border-radius: 10px;
+  padding: 10px 12px;
+  border: 1px solid #334155;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.talkie-logs-title {
+  font-size: 10px;
+  font-weight: 800;
+  color: #f59e0b;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+
+.talkie-log-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  border-bottom: 0.5px solid rgba(255,255,255,0.05);
+  padding-bottom: 4px;
+}
+
+.talkie-log-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.talkie-log-item .log-time {
+  color: #64748b;
+  font-family: var(--font-mono);
+  font-weight: bold;
+}
+
+.talkie-log-item .log-channel {
+  background: #0f172a;
+  color: #3b82f6;
+  font-weight: 800;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 8px;
+}
+
+.talkie-log-item .log-msg {
+  color: #cbd5e1;
+  flex: 1;
 }

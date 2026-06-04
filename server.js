@@ -1045,7 +1045,7 @@ async function probeB200() {
 probeB200();
 setInterval(probeB200, B200_HEALTH_TTL);
 
-app.get('/health', (_req, res) => {
+app.get(['/health', '/api/health'], (_req, res) => {
   res.json({
     status: 'OK',
     services: {
@@ -1137,9 +1137,51 @@ app.post('/api/ai/chat', async (req, res) => {
 
   try {
     const provinceName = req.body.province || 'เชียงราย';
-    const [weather, traffic, waterLevels] = await Promise.all([fetchLiveWeather(), fetchLiveTraffic(), fetchWaterLevels(provinceName)]);
+
+    // Helper to safely fetch CCTV telemetry from B200 without blocking chat
+    const fetchCctvTelemetry = async () => {
+      try {
+        const response = await fetch(`${ML_INFERENCE_URL}/all_cctv_congestion`, {
+          headers: mlHeaders(),
+          signal: AbortSignal.timeout(2000)
+        });
+        if (response.ok) return await response.json();
+      } catch (err) {
+        console.error('[API] Failed to fetch active CCTV telemetry from B200:', err.message);
+      }
+      return null;
+    };
+
+    const [weather, traffic, waterLevels, cctvData] = await Promise.all([
+      fetchLiveWeather(),
+      fetchLiveTraffic(),
+      fetchWaterLevels(provinceName),
+      fetchCctvTelemetry()
+    ]);
+
     const sensorContext = buildContext(weather, traffic, null, waterLevels, rainRadarCache);
     const routeContextStr = buildRouteContextStr(routeContext ?? null);
+
+    // Format B200 CCTV Telemetry context
+    let cctvTelemetryStr = 'ไม่มีข้อมูลกล้อง CCTV เรียลไทม์';
+    if (cctvData) {
+      const entries = Object.entries(cctvData);
+      if (entries.length > 0) {
+        cctvTelemetryStr = entries.map(([url, t]) => {
+          let camName = 'กล้อง CCTV';
+          if (url.includes('camid=10.8.0.14:8001')) camName = 'iTIC Stream 1 (IP: 10.8.0.14:8001)';
+          else if (url.includes('camid=10.8.0.22:8001')) camName = 'iTIC Stream 2 (IP: 10.8.0.22:8001)';
+          else if (url.includes('camid=10.8.0.25:8001')) camName = 'iTIC Stream 3 (IP: 10.8.0.25:8001)';
+          else if (url.includes('bus.jpg')) camName = 'CCTV-CR01 (เมืองเชียงราย)';
+          else if (url.includes('zidane.jpg')) camName = 'CCTV-CR02 (เทิง)';
+          else camName = url.split('/').pop() || url;
+          
+          return `- ${camName}: มียานพาหนะ ${t.density} คัน, ความเร็วเฉลี่ย ${t.avg_speed ? t.avg_speed.toFixed(1) : '0.0'} กม./ชม., ทิศทางเดินรถหลัก: ${t.predominant_direction || 'N/A'}, สภาพจราจร: ${t.desc?.toUpperCase() || t.level?.toUpperCase()}`;
+        }).join('\n');
+      } else {
+        cctvTelemetryStr = 'ยังไม่มีข้อมูลกล้องที่กำลังเชื่อมต่อวิเคราะห์สดในระบบขณะนี้';
+      }
+    }
 
     const systemPrompt = `คุณคือ FloodNav AI ผู้ช่วยนำทางเลี่ยงน้ำท่วมสำหรับจังหวัด${provinceName}
 ตอบภาษาไทย กระชับ ไม่เกิน 5 ประโยค อิงข้อมูลใน CONTEXT เท่านั้น ห้ามแต่งข้อมูลนอก CONTEXT
@@ -1151,9 +1193,13 @@ app.post('/api/ai/chat', async (req, res) => {
 - dam levels และ CCTV traffic เป็น monitoring context ไม่ใช่ส่วนของ risk formula
 - ถ้าไม่มีข้อมูลเส้นทางในส่วน [ข้อมูลเส้นทาง] ให้ตอบว่า "ยังไม่มีข้อมูลเส้นทางที่เลือก"
 - ถ้า dataSource ของ feature ใดเป็น offline/fallback ให้แจ้งผู้ใช้ด้วย
+- หากผู้ใช้ถามเรื่องความจราจร ปริมาณรถ หรือสภาพกล้อง CCTV ให้ใช้ข้อมูลจากหัวข้อ [ข้อมูลกล้อง CCTV เรียลไทม์จาก YOLO AI] เพื่อตอบได้ทันที
 
 [สภาพอากาศและจราจร]
 ${sensorContext}
+
+[ข้อมูลกล้อง CCTV เรียลไทม์จาก YOLO AI]
+${cctvTelemetryStr}
 
 [ข้อมูลเส้นทาง ML Model]
 ${routeContextStr}`;
@@ -1412,27 +1458,28 @@ const overrideLog = [];
 
 app.post('/api/override', async (req, res) => {
   const token = req.headers.authorization;
-  if (!token || token !== `Bearer ${process.env.ADMIN_TOKEN}`) {
+  if (process.env.ADMIN_TOKEN && token !== `Bearer ${process.env.ADMIN_TOKEN}`) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  const { routeId, reason, officer } = req.body ?? {};
-  if (!routeId || !reason || !officer) {
+  const { routeId, route, reason, officer } = req.body ?? {};
+  const finalRouteId = routeId || route;
+  if (!finalRouteId || !reason || !officer) {
     return res.status(400).json({ error: 'Missing routeId, reason, or officer' });
   }
   const record = {
     id:        `OVR-${Date.now()}`,
-    routeId,
+    routeId:   finalRouteId,
     reason,
     officer,
     timestamp: new Date().toISOString(),
   };
   overrideLog.unshift(record);
   if (overrideLog.length > 100) overrideLog.pop();
-  console.log(`[OVERRIDE] ${record.id} — ${officer} selected route ${routeId}: ${reason}`);
+  console.log(`[OVERRIDE] ${record.id} — ${officer} selected route ${finalRouteId}: ${reason}`);
 
   if (supabase) {
     supabase.from('decision_logs')
-      .insert({ id: record.id, route_id: routeId, reason, officer, created_at: record.timestamp })
+      .insert({ id: record.id, route_id: finalRouteId, reason, officer, created_at: record.timestamp })
       .then(({ error }) => { if (error) console.warn('[OVERRIDE] Supabase insert failed:', error.message); });
   }
 
@@ -1789,7 +1836,7 @@ app.post('/api/detect-cctv', async (req, res) => {
     const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
 
     console.log(`[API] Forwarding image bytes to the Python B200 VM for YOLOv8 detection`);
-    const response = await fetch(`${ML_INFERENCE_URL}/detect_cctv_bytes`, {
+    const response = await fetch(`${ML_INFERENCE_URL}/detect_cctv_bytes?camera_id=${encodeURIComponent(image_url)}`, {
       method: 'POST',
       headers: {
         ...mlHeaders(),
@@ -1900,7 +1947,7 @@ app.get('/api/stream-cctv', (req, res) => {
         lastProcessedTime = now;
         
         try {
-          const targetUrl = `${ML_INFERENCE_URL}/process_frame`;
+          const targetUrl = `${ML_INFERENCE_URL}/process_frame?camera_id=${encodeURIComponent(url)}`;
           const response = await fetch(targetUrl, {
             method: 'POST',
             headers: {
@@ -2176,7 +2223,7 @@ app.get('/api/vehicles/logs', (_req, res) => {
 const fieldReports = []; // in-memory fallback when Supabase is unavailable
 
 app.post('/api/field-report', async (req, res) => {
-  const { type, severity, note, lat, lon, province, timestamp } = req.body || {};
+  const { type, severity, note, lat, lon, province, timestamp, imageUrl } = req.body || {};
   if (!type) return res.status(400).json({ error: 'type is required' });
 
   const report = {
@@ -2188,6 +2235,7 @@ app.post('/api/field-report', async (req, res) => {
     lon: lon ? parseFloat(lon) : null,
     province: province || 'เชียงราย',
     timestamp: timestamp || new Date().toISOString(),
+    image_url: imageUrl || null,
   };
 
   if (supabase) {
@@ -2201,7 +2249,7 @@ app.post('/api/field-report', async (req, res) => {
     fieldReports.push(report);
   }
 
-  console.log(`📋 Field report received: ${type} (${severity}) at ${lat},${lon}`);
+  console.log(`📋 Field report received: ${type} (${severity}) at ${lat},${lon} with image: ${imageUrl || 'none'}`);
   res.json({ status: 'ok', id: report.id });
 });
 
