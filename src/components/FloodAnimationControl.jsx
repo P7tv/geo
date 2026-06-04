@@ -60,7 +60,7 @@ export default function FloodAnimationControl({
   };
 
   return (
-    <div style={{
+    <div className="flood-animation-control" style={{
       position: 'absolute', bottom: 12, left: '50%',
       transform: 'translateX(-50%)',
       background: 'rgba(15,23,42,0.85)', backdropFilter: 'blur(10px)',

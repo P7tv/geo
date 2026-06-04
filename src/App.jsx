@@ -2188,7 +2188,7 @@ export default function App() {
                                 onClick={() => setFloodRangeOpen(o => !o)}
                                 style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-2)', color: 'var(--text-2)', cursor: 'pointer', lineHeight: 1.6 }}
                               >
-                                {floodRange} ▾
+                                {floodRange === '1day' ? '1 วัน' : floodRange === '3days' ? '3 วัน' : floodRange === '7days' ? '7 วัน' : '30 วัน'} ▾
                               </button>
                               {floodRangeOpen && (
                                 <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6, zIndex: 999, minWidth: 90, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
@@ -2214,7 +2214,7 @@ export default function App() {
                                 onClick={() => setHistFreqRangeOpen(o => !o)}
                                 style={{ fontSize: 10, padding: '1px 5px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--bg-2)', color: 'var(--text-2)', cursor: 'pointer', lineHeight: 1.6 }}
                               >
-                                {histFreqRange} ▾
+                                {histFreqRange === 'freq' ? 'ซ้ำซาก' : histFreqRange === '1day' ? '1 วัน' : histFreqRange === '3days' ? '3 วัน' : histFreqRange === '7days' ? '7 วัน' : '30 วัน'} ▾
                               </button>
                               {histFreqRangeOpen && (
                                 <div style={{ position: 'absolute', right: 0, top: '100%', marginTop: 4, background: 'var(--bg-1)', border: '1px solid var(--border)', borderRadius: 6, zIndex: 999, minWidth: 100, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}>
