@@ -936,3 +936,21 @@ async def detect_cctv_bytes(request: Request, camera_id: str = "default"):
 def get_all_cctv_congestion():
     return cctv_last_congestion
 
+@app.post("/mock_cctv_congestion")
+async def mock_cctv_congestion(request: Request):
+    body = await request.json()
+    camera_id = body.get("camera_id")
+    if not camera_id:
+        return {"status": "error", "message": "Missing camera_id"}
+    level = body.get("level", "high")
+    density = body.get("density", 15)
+    cctv_last_congestion[camera_id] = {
+        "level": level,
+        "desc": "Traffic Jam" if level == "high" else "Slow Traffic",
+        "avg_speed": 5.0 if level == "high" else 15.0,
+        "density": density,
+        "predominant_direction": "N",
+        "timestamp": time.time()
+    }
+    return {"status": "success", "cctv_last_congestion": cctv_last_congestion}
+
