@@ -171,9 +171,10 @@ def _extract_subgraph(lat1, lon1, lat2, lon2, G, buffer_m=BBOX_BUFFER_M):
     nodes = [n for n, d in G.nodes(data=True) if min_lat <= d['y'] <= max_lat and min_lon <= d['x'] <= max_lon]
     return G.subgraph(nodes)
 
-def _build_digraph(SG, blocked_points, flood_points=None):
+def _build_digraph(SG, blocked_points, flood_points=None, traffic_points=None):
     penalised = set()
     flood_w = {}
+    traffic_w = {}
     if blocked_points:
         for u, v, _ in SG.edges(data=True):
             ud, vd = SG.nodes[u], SG.nodes[v]
@@ -196,6 +197,19 @@ def _build_digraph(SG, blocked_points, flood_points=None):
             if max_sev > 0:
                 flood_w[(u, v)] = FLOOD_PENALTY_MAX * max_sev
 
+    if traffic_points:
+        for u, v, _ in SG.edges(data=True):
+            if (u, v) in penalised: continue
+            ud, vd = SG.nodes[u], SG.nodes[v]
+            mid_lat = (ud['y'] + vd['y']) / 2
+            mid_lon = (ud['x'] + vd['x']) / 2
+            max_sev = 0.0
+            for tp in traffic_points:
+                if _haversine_m(tp['lat'], tp['lon'], mid_lat, mid_lon) <= tp.get('radiusM', 300):
+                    max_sev = max(max_sev, tp.get('severity', 0.5))
+            if max_sev > 0:
+                traffic_w[(u, v)] = 3000.0 * max_sev
+
     DG = nx.DiGraph()
     DG.add_nodes_from(SG.nodes(data=True))
     for u, v in SG.edges():
@@ -204,10 +218,16 @@ def _build_digraph(SG, blocked_points, flood_points=None):
         best = min(edges.values(), key=lambda e: e.get('length', float('inf')))
         base = best.get('length', 50.0)
         w = base
-        if (u, v) in penalised: w += BLOCKED_PENALTY
-        elif (u, v) in flood_w: w += flood_w[(u, v)]
-        DG.add_edge(u, v, weight=w, base_length=base, penalized=((u, v) in penalised), flood_weighted=((u, v) in flood_w))
-    return DG, len(penalised), len(flood_w)
+        if (u, v) in penalised:
+            w += BLOCKED_PENALTY
+        else:
+            if (u, v) in flood_w: w += flood_w[(u, v)]
+            if (u, v) in traffic_w: w += traffic_w[(u, v)]
+        DG.add_edge(u, v, weight=w, base_length=base,
+                    penalized=((u, v) in penalised),
+                    flood_weighted=((u, v) in flood_w),
+                    traffic_weighted=((u, v) in traffic_w))
+    return DG, len(penalised), len(flood_w), len(traffic_w)
 
 def _node_overlap(path_a, path_b):
     set_a = set(path_a)
@@ -271,6 +291,7 @@ async def route(request: Request, background_tasks: BackgroundTasks):
     province = body.get('province', 'เชียงราย')
     blocked = (body.get('blockedPoints') or [])[:MAX_BLOCKED_PTS]
     flood_pts = (body.get('floodPoints') or [])[:MAX_FLOOD_PTS]
+    traffic_pts = body.get('trafficPoints') or []
     count = min(int(body.get('routeCount', 2)), MAX_ROUTE_COUNT)
 
     if not start or not end:
@@ -321,8 +342,9 @@ async def route(request: Request, background_tasks: BackgroundTasks):
         return JSONResponse({'error': 'Start/end falls outside subgraph bbox', 'timing': timing}, status_code=400)
 
     t0 = time.time()
-    DG, penalized_count, flood_weighted_count = _build_digraph(SG, blocked, flood_pts or None)
+    DG, penalized_count, flood_weighted_count, traffic_weighted_count = _build_digraph(SG, blocked, flood_pts or None, traffic_pts or None)
     timing['buildGraphS'] = round(time.time() - t0, 3)
+    timing['trafficWeightedEdges'] = traffic_weighted_count
 
     routes_raw, astar_times = _find_routes(DG, sn, en, count, G)
     timing['astarS'] = astar_times
@@ -339,6 +361,7 @@ async def route(request: Request, background_tasks: BackgroundTasks):
         'timing': timing,
         'snap': {'startM': round(snap_s), 'endM': round(snap_e)},
         'penalizedEdges': penalized_count,
+        'trafficWeightedEdges': traffic_weighted_count,
         'subgraphSize': {'nodes': timing['subgraphNodes'], 'edges': timing['subgraphEdges']},
         'memoryUsedGB': round(mem_after, 2)
     }

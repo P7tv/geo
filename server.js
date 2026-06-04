@@ -188,6 +188,43 @@ const fetchWeatherAt = async (lat = CR_LAT, lon = CR_LON) => {
 // Convenience wrapper for existing call sites that don't pass coordinates.
 const fetchLiveWeather = (lat = CR_LAT, lon = CR_LON) => fetchWeatherAt(lat, lon);
 
+// Helper to safely fetch CCTV telemetry from B200 without blocking other APIs
+const fetchCctvTelemetry = async () => {
+  try {
+    const response = await fetch(`${ML_INFERENCE_URL}/all_cctv_congestion`, {
+      headers: mlHeaders(),
+      signal: AbortSignal.timeout(2000)
+    });
+    if (response.ok) return await response.json();
+  } catch (err) {
+    console.error('[API] Failed to fetch active CCTV telemetry from B200:', err.message);
+  }
+  return null;
+};
+
+// Map CCTV URLs to coordinates:
+// - iTIC Stream 1 / CCTV-CR01: (19.908, 99.832)
+// - iTIC Stream 2: (19.915, 99.825)
+// - iTIC Stream 3: (19.902, 99.842)
+// - CCTV-CR02: (19.977, 100.074)
+const getCctvCoords = (url) => {
+  if (!url) return null;
+  if (url.includes('camid=10.8.0.14:8001') || url.includes('bus.jpg')) {
+    return { lat: 19.908, lon: 99.832 };
+  }
+  if (url.includes('camid=10.8.0.22:8001')) {
+    return { lat: 19.915, lon: 99.825 };
+  }
+  if (url.includes('camid=10.8.0.25:8001')) {
+    return { lat: 19.902, lon: 99.842 };
+  }
+  if (url.includes('zidane.jpg')) {
+    return { lat: 19.977, lon: 100.074 };
+  }
+  return null;
+};
+
+
 const weatherToString = (w) => {
   if (!w) return null;
   const dirs = ['เหนือ','ตะวันออกเฉียงเหนือ','ตะวันออก','ตะวันออกเฉียงใต้','ใต้','ตะวันตกเฉียงใต้','ตะวันตก','ตะวันตกเฉียงเหนือ'];
@@ -1138,21 +1175,8 @@ app.post('/api/ai/chat', async (req, res) => {
   try {
     const provinceName = req.body.province || 'เชียงราย';
 
-    // Helper to safely fetch CCTV telemetry from B200 without blocking chat
-    const fetchCctvTelemetry = async () => {
-      try {
-        const response = await fetch(`${ML_INFERENCE_URL}/all_cctv_congestion`, {
-          headers: mlHeaders(),
-          signal: AbortSignal.timeout(2000)
-        });
-        if (response.ok) return await response.json();
-      } catch (err) {
-        console.error('[API] Failed to fetch active CCTV telemetry from B200:', err.message);
-      }
-      return null;
-    };
-
     const [weather, traffic, waterLevels, cctvData] = await Promise.all([
+
       fetchLiveWeather(),
       fetchLiveTraffic(),
       fetchWaterLevels(provinceName),
@@ -2015,15 +2039,34 @@ app.post('/api/dynamic-routes', async (req, res) => {
     const wxLat = (start.lat + end.lat) / 2, wxLon = (start.lon + end.lon) / 2;
 
     // Fetch live data in parallel with the routing attempt
-    const [localOk, weather, gistdaFeatures, damResults] = await Promise.all([
+    const [localOk, weather, gistdaFeatures, damResults, cctvData] = await Promise.all([
       isLocalGraphAvailable(),
       fetchWeatherAt(wxLat, wxLon),
       fetchGistdaCurrentFlood(),
       Promise.allSettled(DAM_META.map(fetchDamLevel)),
+      fetchCctvTelemetry(),
     ]);
     // rain72hMap (A/B/C cached) no longer used for dynamic — per-route centroid fetch happens in scoreRawRoutes
 
     const damLevels = damResults.filter(r => r.status === 'fulfilled' && r.value?.percent != null).map(r => r.value);
+
+    // Build traffic points from YOLO CCTV telemetry for A* routing penalties
+    const trafficPoints = [];
+    if (cctvData) {
+      for (const [url, data] of Object.entries(cctvData)) {
+        if (data && (data.level === 'medium' || data.level === 'high')) {
+          const coords = getCctvCoords(url);
+          if (coords) {
+            trafficPoints.push({
+              lat: coords.lat,
+              lon: coords.lon,
+              radiusM: 300,
+              severity: data.level === 'high' ? 1.0 : 0.5
+            });
+          }
+        }
+      }
+    }
 
     const buildDataStatus = (roadGraph) => ({
       roadGraph,
@@ -2048,8 +2091,8 @@ app.post('/api/dynamic-routes', async (req, res) => {
         return { lat, lon, radiusM: 400, severity: 1.0 };
       }).filter(Boolean);
 
-      const reqBody = { start, end, blockedPoints, routeCount, floodPoints, province };
-      console.log(`[local-graph] POST ${LOCAL_GRAPH_URL}/route  province=${province}  body=${JSON.stringify({ start, end, blockedPoints, routeCount })}`);
+      const reqBody = { start, end, blockedPoints, routeCount, floodPoints, trafficPoints, province };
+      console.log(`[local-graph] POST ${LOCAL_GRAPH_URL}/route  province=${province}  body=${JSON.stringify({ start, end, blockedPoints, routeCount, trafficPointsCount: trafficPoints.length })}`);
       try {
         const pyRes = await fetchWithTimeout(`${LOCAL_GRAPH_URL}/route`, {
           method: 'POST',
